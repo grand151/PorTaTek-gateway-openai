@@ -1,0 +1,32 @@
+{
+  "name": "openai-openrouter-gateway",
+  "version": "1.0.0",
+  "description": "Gateway emulujący API OpenAI z wykorzystaniem darmowych modeli OpenRouter",
+  "main": "openai-gateway.js",
+  "scripts": {
+    "start": "node openai-gateway.js",
+    "dev": "nodemon openai-gateway.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "openai",
+    "openrouter",
+    "gateway",
+    "api",
+    "proxy",
+    "mistral",
+    "llm"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.7",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+} 
