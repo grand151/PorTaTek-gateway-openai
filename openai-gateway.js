@@ -12,7 +12,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8787;
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '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';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || 'OPENROUTER_API_KEY';
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3', 10);
 const RETRY_DELAY = parseInt(process.env.RETRY_DELAY || '1000', 10);
 const CACHE_TTL = parseInt(process.env.CACHE_TTL || '3600000', 10);
