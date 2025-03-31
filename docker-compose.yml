@@ -7,7 +7,7 @@ services:
       - "8787:8787"
     environment:
       - PORT=8787
-      - OPENROUTER_API_KEY=OPENROUTER_API_KEY
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - CACHE_TTL=3600000
       - MAX_RETRIES=3
       - RETRY_DELAY=1000
