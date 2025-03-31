@@ -7,7 +7,7 @@ services:
       - "8787:8787"
     environment:
       - PORT=8787
-      - OPENROUTER_API_KEY=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
+      - OPENROUTER_API_KEY=OPENROUTER_API_KEY
       - CACHE_TTL=3600000
       - MAX_RETRIES=3
       - RETRY_DELAY=1000
