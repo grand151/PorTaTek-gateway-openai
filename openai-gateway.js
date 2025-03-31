@@ -10,6 +10,15 @@ const dotenv = require('dotenv');
 // Załadowanie zmiennych środowiskowych
 dotenv.config();
 
+// Walidacja wymaganych zmiennych środowiskowych
+const requiredEnvVars = ['OPENROUTER_API_KEY'];
+const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+
+if (missingEnvVars.length > 0) {
+  console.error('Brak wymaganych zmiennych środowiskowych:', missingEnvVars.join(', '));
+  process.exit(1);
+}
+
 const app = express();
 const PORT = process.env.PORT || 8787;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
