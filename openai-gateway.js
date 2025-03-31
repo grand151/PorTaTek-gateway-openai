@@ -37,6 +37,7 @@ const MODEL_MAPPING = {
   'gpt-4': 'mistralai/mistral-small-3.1-24b-instruct:free',
   'gpt-4-turbo': 'mistralai/mistral-small-3.1-24b-instruct:free',
   'gpt-4o': 'mistralai/mistral-small-3.1-24b-instruct:free',
+  'gpt-4o-mini-2024-07-18': 'mistralai/mistral-small-3.1-24b-instruct:free',
   'text-embedding-ada-002': 'mistralai/mistral-embed:free',
   
   // Model z obsługą obrazów
