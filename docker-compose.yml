@@ -1,8 +1,6 @@
-version: '3'
 services:
   gateway:
     build: .
-    container_name: openai-gateway
     ports:
       - "8787:8787"
     environment:
@@ -19,4 +17,4 @@ services:
 
 networks:
   gateway_network:
-    driver: bridge 
+    driver: bridge
