@@ -20,6 +20,8 @@ Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowu
 | gpt-4 | mistralai/mistral-small-3.1-24b-instruct:free |
 | gpt-4-vision | qwen/qwen2.5-vl-32b-instruct:free |
 | text-embedding-ada-002 | mistralai/mistral-embed:free |
+| text-davinci-003 | mistralai/mistral-embed:free |
+
 
 ## Wymagania
 
