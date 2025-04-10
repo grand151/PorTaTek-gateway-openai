@@ -33,6 +33,7 @@ app.use(bodyParser.json());
 // Mapowanie modeli OpenAI na modele OpenRouter
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'mistralai/mistral-small-3.1-24b-instruct:free',
+  'gpt-3.5-turbo-instruct': 'mistralai/mistral-small-3.1-24b-instruct:free',
   'gpt-3.5-turbo-16k': 'mistralai/mistral-small-3.1-24b-instruct:free',
   'gpt-4': 'mistralai/mistral-small-3.1-24b-instruct:free',
   'gpt-4-turbo': 'mistralai/mistral-small-3.1-24b-instruct:free',
