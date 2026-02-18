@@ -1917,8 +1917,8 @@ app.use((err, req, res, next) => {
 });
 
 // Uruchomienie serwera
-app.listen(PORT, () => {
-  console.log(`OpenAI Gateway running on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`OpenAI Gateway running on 0.0.0.0:${PORT}`);
   console.log(`Visit http://localhost:${PORT}/health for status`);
 });
 

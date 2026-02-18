@@ -1,6 +1,8 @@
 services:
   gateway:
     build: .
+    ports:
+      - "8787:8787"
     environment:
       - PORT=8787
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
