@@ -78,6 +78,13 @@ const MODEL_MAPPING = {
   'gemma-7b': 'google/gemma-2-9b-it:free',
   'gemma-2b': 'google/gemma-2-2b-it:free',
   
+  // OpenCode models
+  'opencode-big-pickle': 'opencode/big-pickle:free',
+  'opencode-glm-5': 'opencode/glm-5-free:free',
+  'opencode-gpt-5-nano': 'opencode/gpt-5-nano:free',
+  'opencode-kimi-k2.5': 'opencode/kimi-k2.5-free:free',
+  'opencode-minimax-m2.5': 'opencode/minimax-m2.5-free:free',
+  
   // Google Gemini models (direct API)
   'gemini-3-flash': 'gemini-3-flash-preview',
   'gemini-3-pro': 'gemini-3-pro-preview',
@@ -122,7 +129,14 @@ const FALLBACK_MAPPING = {
   'meta-llama/llama-3.2-3b-instruct:free': 'google/gemma-2-9b-it:free',
   
   // Google Gemma fallbacks
-  'google/gemma-2-9b-it:free': 'google/gemma-2-2b-it:free'
+  'google/gemma-2-9b-it:free': 'google/gemma-2-2b-it:free',
+  
+  // OpenCode model fallbacks
+  'opencode/big-pickle:free': 'opencode/glm-5-free:free',
+  'opencode/glm-5-free:free': 'opencode/gpt-5-nano:free',
+  'opencode/gpt-5-nano:free': 'opencode/kimi-k2.5-free:free',
+  'opencode/kimi-k2.5-free:free': 'opencode/minimax-m2.5-free:free',
+  'opencode/minimax-m2.5-free:free': 'deepseek/deepseek-r1-0528:free'
 };
 
 // Konfiguracja cache'a dla odpowiedzi

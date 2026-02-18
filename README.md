@@ -40,6 +40,13 @@ Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowu
 - **gemma-2-9b** - open source, uniwersalny
 - **gemma-2-2b** - najmniejszy, najszybszy
 
+#### OpenCode (nowe modele)
+- **opencode-big-pickle** - model opencode Big Pickle
+- **opencode-glm-5** - model opencode GLM-5
+- **opencode-gpt-5-nano** - model opencode GPT-5 Nano
+- **opencode-kimi-k2.5** - model opencode Kimi K2.5
+- **opencode-minimax-m2.5** - model opencode Minimax M2.5
+
 ### Modele Google Gemini (bezpośrednie API)
 
 - **gemini-3-flash** - najnowszy, ultraszybki
@@ -58,6 +65,11 @@ Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowu
 | gpt-4o-mini | Qwen3 Next 80B | OpenRouter |
 | gpt-4-vision | Qwen3 VL 235B | OpenRouter |
 | gpt-4-code | Qwen3 Coder | OpenRouter |
+| opencode-big-pickle | OpenCode Big Pickle | OpenRouter |
+| opencode-glm-5 | OpenCode GLM-5 | OpenRouter |
+| opencode-gpt-5-nano | OpenCode GPT-5 Nano | OpenRouter |
+| opencode-kimi-k2.5 | OpenCode Kimi K2.5 | OpenRouter |
+| opencode-minimax-m2.5 | OpenCode Minimax M2.5 | OpenRouter |
 | gemini-3-flash | Gemini 3 Flash | Google Gemini |
 | gemini-1.5-pro | Gemini 1.5 Pro | Google Gemini |
 | text-embedding-ada-002 | Mistral Embed | OpenRouter |
@@ -153,6 +165,19 @@ curl -X POST "http://localhost:8787/v1/chat/completions" \
     "model": "gpt-4-code",
     "messages": [
         {"role": "user", "content": "Napisz funkcję sortującą w Python"}
+    ]
+  }'
+```
+
+### Przykład z modelami OpenCode
+
+```bash
+curl -X POST "http://localhost:8787/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "opencode-big-pickle",
+    "messages": [
+        {"role": "user", "content": "Wyjaśnij koncepcję machine learning"}
     ]
   }'
 ```
