@@ -7,11 +7,7 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const dotenv = require('dotenv');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-// const { createOpencodeClient } = require('@opencode-ai/sdk'); // Zakomentariowane - SDK package ma problemy z package.json exports
-
-const GitHubAuthManager = require('./auth');
-const UserManager = require('./users');
-const { createAuthMiddleware, optionalAuthMiddleware } = require('./middleware');
+const { createOpencodeClient } = require('@opencode-ai/sdk');
 
 // Załadowanie zmiennych środowiskowych
 dotenv.config();
@@ -42,6 +38,229 @@ const logger = {
     console.error(`[${timestamp}] [${module}] ❌ ${message}${errorStr}${dataStr}`);
   }
 };
+
+// Rate Limiting System (Token Bucket Algorithm)
+const RATE_LIMIT_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW || '60000', 10); // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10); // requests per window
+
+class RateLimiter {
+  constructor(window = RATE_LIMIT_WINDOW, maxRequests = RATE_LIMIT_MAX_REQUESTS) {
+    this.window = window;
+    this.maxRequests = maxRequests;
+    this.buckets = new Map(); // { apiKey: { tokens, lastRefill } }
+    this.cleanupInterval = setInterval(() => this.cleanup(), 60000); // Cleanup every minute
+  }
+
+  isAllowed(apiKey = 'default') {
+    const now = Date.now();
+    const bucket = this.buckets.get(apiKey) || { tokens: this.maxRequests, lastRefill: now };
+    
+    // Refill tokens based on elapsed time
+    const elapsed = now - bucket.lastRefill;
+    const refillRate = this.maxRequests / this.window;
+    const tokensToAdd = (elapsed * refillRate) / 1000;
+    bucket.tokens = Math.min(this.maxRequests, bucket.tokens + tokensToAdd);
+    bucket.lastRefill = now;
+    
+    if (bucket.tokens >= 1) {
+      bucket.tokens -= 1;
+      this.buckets.set(apiKey, bucket);
+      return { allowed: true, remaining: Math.floor(bucket.tokens), resetAt: now + (this.window / refillRate / 1000) };
+    }
+    
+    return { allowed: false, remaining: 0, resetAt: bucket.lastRefill + this.window };
+  }
+
+  cleanup() {
+    const now = Date.now();
+    for (const [apiKey, bucket] of this.buckets.entries()) {
+      if (now - bucket.lastRefill > this.window * 2) {
+        this.buckets.delete(apiKey);
+      }
+    }
+  }
+
+  stats() {
+    return {
+      activeBuckets: this.buckets.size,
+      window: this.window,
+      maxRequests: this.maxRequests,
+      bucketsData: Array.from(this.buckets.entries()).map(([apiKey, bucket]) => ({
+        apiKey: apiKey === 'default' ? 'default' : `${apiKey.substring(0, 8)}...`,
+        tokens: Math.floor(bucket.tokens),
+        lastRefill: bucket.lastRefill
+      }))
+    };
+  }
+
+  destroy() {
+    clearInterval(this.cleanupInterval);
+  }
+}
+
+const rateLimiter = new RateLimiter();
+logger.info('RateLimiter', 'Initialized', { window: RATE_LIMIT_WINDOW, maxRequests: RATE_LIMIT_MAX_REQUESTS });
+
+// Prometheus Metrics System
+class PrometheusMetrics {
+  constructor() {
+    this.metrics = {
+      httpRequestsTotal: new Map(), // { endpoint: { method: count } }
+      httpRequestDurationSeconds: new Map(), // { endpoint: { durations: [] } }
+      chatCompletionsTotal: 0,
+      chatCompletionsTokensUsed: 0,
+      openCodeRequestsTotal: 0,
+      openCodeRequestErrors: 0,
+      openRouterRequestsTotal: 0,
+      openRouterRequestErrors: 0,
+      geminiRequestsTotal: 0,
+      geminiRequestErrors: 0,
+      rateLimitHits: 0,
+      validationErrors: 0,
+      activeSessions: 0,
+      responseCache: { hits: 0, misses: 0 }
+    };
+    this.startTime = Date.now();
+  }
+
+  recordRequest(endpoint, method, duration) {
+    if (!this.metrics.httpRequestsTotal.has(endpoint)) {
+      this.metrics.httpRequestsTotal.set(endpoint, {});
+      this.metrics.httpRequestDurationSeconds.set(endpoint, []);
+    }
+
+    const endpointMetrics = this.metrics.httpRequestsTotal.get(endpoint);
+    endpointMetrics[method] = (endpointMetrics[method] || 0) + 1;
+
+    const durations = this.metrics.httpRequestDurationSeconds.get(endpoint);
+    durations.push(duration);
+    if (durations.length > 1000) durations.shift();
+  }
+
+  recordChatCompletion(tokens = 0) {
+    this.metrics.chatCompletionsTotal += 1;
+    this.metrics.chatCompletionsTokensUsed += tokens;
+  }
+
+  recordProviderRequest(provider, error = false) {
+    const key = `${provider}RequestsTotal`;
+    const errorKey = `${provider}RequestErrors`;
+    if (this.metrics.hasOwnProperty(key)) {
+      this.metrics[key] += 1;
+      if (error && this.metrics.hasOwnProperty(errorKey)) {
+        this.metrics[errorKey] += 1;
+      }
+    }
+  }
+
+  recordRateLimitHit() {
+    this.metrics.rateLimitHits += 1;
+  }
+
+  recordValidationError() {
+    this.metrics.validationErrors += 1;
+  }
+
+  getMetricsText() {
+    const lines = [];
+    const uptime = (Date.now() - this.startTime) / 1000;
+
+    lines.push('# HELP portatel_gateway_info Gateway system info');
+    lines.push('# TYPE portatel_gateway_info gauge');
+    lines.push(`portatel_gateway_info{version="2.0"} 1`);
+    lines.push('');
+
+    lines.push('# HELP portatel_gateway_uptime_seconds Gateway uptime');
+    lines.push('# TYPE portatel_gateway_uptime_seconds counter');
+    lines.push(`portatel_gateway_uptime_seconds ${uptime}`);
+    lines.push('');
+
+    lines.push('# HELP portatel_http_requests_total Total HTTP requests');
+    lines.push('# TYPE portatel_http_requests_total counter');
+    for (const [endpoint, methods] of this.metrics.httpRequestsTotal.entries()) {
+      for (const [method, count] of Object.entries(methods)) {
+        lines.push(`portatel_http_requests_total{endpoint="${endpoint}",method="${method}"} ${count}`);
+      }
+    }
+    lines.push('');
+
+    lines.push('# HELP portatel_chat_completions_total Total chat completions');
+    lines.push('# TYPE portatel_chat_completions_total counter');
+    lines.push(`portatel_chat_completions_total ${this.metrics.chatCompletionsTotal}`);
+    lines.push('');
+
+    lines.push('# HELP portatel_chat_completions_tokens_total Tokens used');
+    lines.push('# TYPE portatel_chat_completions_tokens_total counter');
+    lines.push(`portatel_chat_completions_tokens_total ${this.metrics.chatCompletionsTokensUsed}`);
+    lines.push('');
+
+    lines.push('# HELP portatel_provider_requests_total Requests per provider');
+    lines.push('# TYPE portatel_provider_requests_total counter');
+    for (const provider of ['openCode', 'openRouter', 'gemini']) {
+      const key = `${provider}RequestsTotal`;
+      if (this.metrics.hasOwnProperty(key)) {
+        lines.push(`portatel_provider_requests_total{provider="${provider}"} ${this.metrics[key]}`);
+        const errorKey = `${provider}RequestErrors`;
+        if (this.metrics.hasOwnProperty(errorKey)) {
+          lines.push(`portatel_provider_errors_total{provider="${provider}"} ${this.metrics[errorKey]}`);
+        }
+      }
+    }
+    lines.push('');
+
+    lines.push('# HELP portatel_rate_limit_hits Rate limit violations');
+    lines.push('# TYPE portatel_rate_limit_hits counter');
+    lines.push(`portatel_rate_limit_hits ${this.metrics.rateLimitHits}`);
+    lines.push('');
+
+    lines.push('# HELP portatel_validation_errors Validation errors');
+    lines.push('# TYPE portatel_validation_errors counter');
+    lines.push(`portatel_validation_errors ${this.metrics.validationErrors}`);
+    lines.push('');
+
+    if (this.metrics.httpRequestDurationSeconds.size > 0) {
+      lines.push('# HELP portatel_http_request_duration_seconds Request latency');
+      lines.push('# TYPE portatel_http_request_duration_seconds histogram');
+      for (const [endpoint, durations] of this.metrics.httpRequestDurationSeconds.entries()) {
+        if (durations.length > 0) {
+          const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
+          const max = Math.max(...durations);
+          const p95 = durations.sort((a, b) => a - b)[Math.floor(durations.length * 0.95)] || 0;
+          lines.push(`portatel_http_request_duration_seconds_sum{endpoint="${endpoint}"} ${avg}`);
+          lines.push(`portatel_http_request_duration_seconds_max{endpoint="${endpoint}"} ${max}`);
+          lines.push(`portatel_http_request_duration_seconds{endpoint="${endpoint}",le="p95"} ${p95}`);
+        }
+      }
+    }
+
+    lines.push('');
+    lines.push(`# Exported at ${new Date().toISOString()}`);
+    return lines.join('\n');
+  }
+
+  reset() {
+    this.metrics = {
+      httpRequestsTotal: new Map(),
+      httpRequestDurationSeconds: new Map(),
+      chatCompletionsTotal: 0,
+      chatCompletionsTokensUsed: 0,
+      openCodeRequestsTotal: 0,
+      openCodeRequestErrors: 0,
+      openRouterRequestsTotal: 0,
+      openRouterRequestErrors: 0,
+      geminiRequestsTotal: 0,
+      geminiRequestErrors: 0,
+      rateLimitHits: 0,
+      validationErrors: 0,
+      activeSessions: 0,
+      responseCache: { hits: 0, misses: 0 }
+    };
+    this.startTime = Date.now();
+  }
+}
+
+const metrics = new PrometheusMetrics();
+logger.info('PrometheusMetrics', 'Initialized', {});
 
 // Walidacja wymaganych zmiennych środowiskowych (przynajmniej jeden provider musi być skonfigurowany)
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -208,19 +427,161 @@ const CACHE_TTL = parseInt(process.env.CACHE_TTL || '3600000', 10);
 app.use(cors());
 app.use(bodyParser.json());
 
-// Inicjalizacja auth systemów
-const userManager = new UserManager('./users-db.json');
-const githubAuth = new GitHubAuthManager({
-  clientId: process.env.GITHUB_CLIENT_ID,
-  clientSecret: process.env.GITHUB_CLIENT_SECRET,
-  callbackURL: process.env.GITHUB_CALLBACK_URL || 'http://localhost:8787/auth/github/callback',
-  jwtSecret: process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-me'
+// Rate Limiting Middleware
+app.use((req, res, next) => {
+  const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '') || 'default';
+  const rateLimitCheck = rateLimiter.isAllowed(apiKey);
+  
+  res.setHeader('X-RateLimit-Limit', rateLimiter.maxRequests);
+  res.setHeader('X-RateLimit-Remaining', rateLimitCheck.remaining);
+  res.setHeader('X-RateLimit-Reset', Math.ceil(rateLimitCheck.resetAt / 1000));
+  
+  if (!rateLimitCheck.allowed) {
+    logger.warn('RateLimiter', 'Rate limit exceeded', { apiKey: apiKey.substring(0, 8) });
+    return res.status(429).json({
+      error: {
+        message: 'Rate limit exceeded. Too many requests.',
+        type: 'rate_limit_exceeded',
+        param: null,
+        code: 'rate_limit_exceeded'
+      }
+    });
+  }
+  
+  next();
 });
 
-const authMiddleware = createAuthMiddleware(githubAuth, userManager);
-const optionalAuth = optionalAuthMiddleware(githubAuth, userManager);
+// Metrics Recording Middleware
+app.use((req, res, next) => {
+  const startTime = Date.now();
+  
+  res.on('finish', () => {
+    const duration = (Date.now() - startTime) / 1000;
+    metrics.recordRequest(req.path, req.method, duration);
+  });
+  
+  next();
+});
 
-// Mapowanie modeli OpenAI na modele OpenRouter
+app.use((req, res, next) => {
+  // Sanitize and validate Content-Type
+  const contentType = req.headers['content-type'];
+  if (req.method !== 'GET' && req.method !== 'DELETE' && contentType && !contentType.includes('application/json')) {
+    return res.status(400).json({
+      error: {
+        message: 'Content-Type must be application/json',
+        type: 'invalid_request_error',
+        param: 'content-type',
+        code: 'invalid_content_type'
+      }
+    });
+  }
+
+  // Validate body size (max 10MB)
+  if (req.body && JSON.stringify(req.body).length > 10 * 1024 * 1024) {
+    return res.status(413).json({
+      error: {
+        message: 'Request body exceeds maximum size (10MB)',
+        type: 'invalid_request_error',
+        param: 'body',
+        code: 'request_too_large'
+      }
+    });
+  }
+
+  // Validate chat completions specific requirements
+  if (req.path === '/v1/chat/completions' && req.method === 'POST') {
+    const { model, messages } = req.body || {};
+
+    if (!model || typeof model !== 'string') {
+      return res.status(400).json({
+        error: {
+          message: 'model is required and must be a string',
+          type: 'invalid_request_error',
+          param: 'model',
+          code: 'invalid_request'
+        }
+      });
+    }
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({
+        error: {
+          message: 'messages is required and must be a non-empty array',
+          type: 'invalid_request_error',
+          param: 'messages',
+          code: 'invalid_request'
+        }
+      });
+    }
+
+    // Validate message format
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (!msg.role || !['system', 'user', 'assistant'].includes(msg.role)) {
+        return res.status(400).json({
+          error: {
+            message: `messages[${i}].role must be 'system', 'user', or 'assistant'`,
+            type: 'invalid_request_error',
+            param: `messages[${i}].role`,
+            code: 'invalid_request'
+          }
+        });
+      }
+
+      if (!msg.content || typeof msg.content !== 'string') {
+        return res.status(400).json({
+          error: {
+            message: `messages[${i}].content is required and must be a string`,
+            type: 'invalid_request_error',
+            param: `messages[${i}].content`,
+            code: 'invalid_request'
+          }
+        });
+      }
+    }
+
+    // Validate optional parameters
+    const maxTokens = req.body.max_tokens;
+    if (maxTokens !== undefined && (typeof maxTokens !== 'number' || maxTokens < 1 || maxTokens > 100000)) {
+      return res.status(400).json({
+        error: {
+          message: 'max_tokens must be a number between 1 and 100000',
+          type: 'invalid_request_error',
+          param: 'max_tokens',
+          code: 'invalid_request'
+        }
+      });
+    }
+
+    const temperature = req.body.temperature;
+    if (temperature !== undefined && (typeof temperature !== 'number' || temperature < 0 || temperature > 2)) {
+      return res.status(400).json({
+        error: {
+          message: 'temperature must be a number between 0 and 2',
+          type: 'invalid_request_error',
+          param: 'temperature',
+          code: 'invalid_request'
+        }
+      });
+    }
+
+    const topP = req.body.top_p;
+    if (topP !== undefined && (typeof topP !== 'number' || topP < 0 || topP > 1)) {
+      return res.status(400).json({
+        error: {
+          message: 'top_p must be a number between 0 and 1',
+          type: 'invalid_request_error',
+          param: 'top_p',
+          code: 'invalid_request'
+        }
+      });
+    }
+  }
+
+  next();
+});
+
 const MODEL_MAPPING = {
   // Standard GPT models -> Mistral/DeepSeek
   'gpt-3.5-turbo': 'deepseek/deepseek-r1-0528:free',
@@ -702,82 +1063,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// ============= AUTH ROUTES =============
-
-// Login page / redirect to GitHub OAuth
-app.get('/login', (req, res) => {
-  const clientId = process.env.GITHUB_CLIENT_ID;
-  if (!clientId) {
-    return res.status(500).json({ error: 'GitHub OAuth not configured (missing GITHUB_CLIENT_ID)' });
-  }
-  const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=repo,user,gist`;
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head><title>Login - PorTaTek Gateway</title></head>
-    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
-      <div style="background: white; padding: 40px; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); text-align: center; max-width: 400px;">
-        <h1>PorTaTek Gateway</h1>
-        <p style="color: #666; margin: 20px 0;">Sign in with your GitHub account to access the admin panel and API</p>
-        <a href="${githubAuthUrl}" style="display: inline-block; background: #333; color: white; padding: 12px 30px; border-radius: 5px; text-decoration: none; font-weight: 600; margin-top: 20px; transition: background 0.3s;">
-          Sign in with GitHub
-        </a>
-        <p style="color: #999; font-size: 12px; margin-top: 30px;">This application requires GitHub authentication to access full API and admin features.</p>
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-// GitHub OAuth callback
-app.get('/auth/github/callback', async (req, res) => {
-  const { code, error, error_description } = req.query;
-  
-  if (error) {
-    return res.status(400).json({ error: error_description || 'GitHub authentication failed' });
-  }
-  
-  if (!code) {
-    return res.status(400).json({ error: 'Missing authorization code' });
-  }
-  
-  try {
-    const result = await githubAuth.handleCallback(code);
-    
-    // Utwórz sesję i token
-    const user = await userManager.createOrUpdateUser(result.user);
-    const token = githubAuth.generateJWT({ userId: user.id, username: user.login });
-    
-    // Redirect to admin panel z token w cookie
-    res.cookie('auth_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-    });
-    
-    res.redirect('/admin?success=true');
-  } catch (error) {
-    console.error('Auth callback error:', error);
-    res.status(500).json({ error: 'Authentication failed: ' + error.message });
-  }
-});
-
-// Get current user info
-app.get('/auth/me', authMiddleware, (req, res) => {
-  res.json({
-    user: req.user,
-    authenticated: true
-  });
-});
-
-// Logout
-app.post('/auth/logout', (req, res) => {
-  res.clearCookie('auth_token');
-  res.json({ message: 'Logged out successfully' });
-});
-
-// ============= END AUTH ROUTES =============
-
 // Endpoint dla /v1/chat/completions
 app.post('/v1/chat/completions', async (req, res) => {
   try {
@@ -838,10 +1123,35 @@ app.post('/v1/chat/completions', async (req, res) => {
          setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
          
          res.json(openAIResponse);
-       } catch (error) {
-         handleError(error, res, { provider: 'gemini' });
-       }
-    } else if (provider === 'opencode') {
+        } catch (error) {
+          logger.warn('gemini_failover', 'Gemini request failed, attempting failover to OpenRouter', { error: error.message });
+          
+          // Failover to OpenRouter
+          if (!openrouterClient) {
+            return handleError(error, res, { provider: 'gemini', fallback_failed: true });
+          }
+          
+          try {
+            const routerData = await fetchOpenRouterWithRetry(model, messages, otherOptions);
+            const openAIResponse = {
+              id: routerData.id,
+              object: 'chat.completion',
+              created: Math.floor(Date.now() / 1000),
+              model: requestedModel,
+              choices: routerData.choices,
+              usage: routerData.usage,
+              x_fallback_provider: 'openrouter'
+            };
+
+            responseCache.set(cacheKey, openAIResponse);
+            setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
+
+            res.json(openAIResponse);
+          } catch (failoverError) {
+            handleError(failoverError, res, { provider: 'openrouter', primary_provider_failed: 'gemini' });
+          }
+        }
+     } else if (provider === 'opencode') {
       if (!opencodeClient) {
         return res.status(503).json({
           error: {
@@ -888,11 +1198,36 @@ app.post('/v1/chat/completions', async (req, res) => {
           setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
 
            res.json(openAIResponse);
-         } catch (error) {
-           handleError(error, res, { provider: 'opencode' });
-         }
-       }
-     } else {
+          } catch (error) {
+            logger.warn('opencode_failover', 'OpenCode request failed, attempting failover to OpenRouter', { error: error.message });
+            
+            // Failover to OpenRouter
+            if (!openrouterKey) {
+              return handleError(error, res, { provider: 'opencode', fallback_failed: true });
+            }
+            
+            try {
+              const routerData = await fetchOpenRouterWithRetry(model, messages, otherOptions);
+              const openAIResponse = {
+                id: routerData.id,
+                object: 'chat.completion',
+                created: Math.floor(Date.now() / 1000),
+                model: requestedModel,
+                choices: routerData.choices,
+                usage: routerData.usage,
+                x_fallback_provider: 'openrouter'
+              };
+
+              responseCache.set(cacheKey, openAIResponse);
+              setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
+
+              res.json(openAIResponse);
+            } catch (failoverError) {
+              handleError(failoverError, res, { provider: 'openrouter', primary_provider_failed: 'opencode' });
+            }
+          }
+        }
+      } else {
       // Obsługa przez OpenRouter (domyślna)
       const openrouterKey = getProviderApiKey('openrouter');
       if (!openrouterKey) {
@@ -1304,6 +1639,12 @@ app.get('/health', async (req, res) => {
   res.json(health);
 });
 
+// Prometheus Metrics Endpoint
+app.get('/metrics', (req, res) => {
+  res.set('Content-Type', 'text/plain; version=0.0.4');
+  res.send(metrics.getMetricsText());
+});
+
 app.get('/', (req, res) => {
   res.json({
     message: 'OpenAI API Gateway',
@@ -1414,12 +1755,12 @@ app.post('/v1/emulate', (req, res) => {
 });
 
 // Endpoint panelu konfiguracyjnego (HTML)
-app.get('/admin', authMiddleware, (req, res) => {
+app.get('/admin', (req, res) => {
   res.send(getConfigPanelHTML());
 });
 
 // Endpoint do pobrania konfiguracji
-app.get('/config', optionalAuth, (req, res) => {
+app.get('/config', (req, res) => {
   res.json({
     modelMapping: MODEL_MAPPING,
     fallbackMapping: FALLBACK_MAPPING,
@@ -1455,7 +1796,7 @@ app.get('/config', optionalAuth, (req, res) => {
 });
 
 // Endpoint do aktualizacji konfiguracji modeli (tylko w pamięci, nie zapisuje do pliku)
-app.post('/config/models', authMiddleware, (req, res) => {
+app.post('/config/models', (req, res) => {
   try {
     const { openaiModel, targetModel, provider } = req.body;
     
@@ -1490,7 +1831,7 @@ app.post('/config/models', authMiddleware, (req, res) => {
 });
 
 // Endpoint do czyszczenia cache'a
-app.post('/config/clear-cache', authMiddleware, (req, res) => {
+app.post('/config/clear-cache', (req, res) => {
   const cacheSize = responseCache.size;
   responseCache.clear();
   res.json({
@@ -1564,7 +1905,7 @@ app.delete('/session/:sessionId', (req, res) => {
 });
 
 // Endpoint do dodawania/aktualizacji kluczy API dla providerów
-app.post('/config/providers', authMiddleware, (req, res) => {
+app.post('/config/providers', (req, res) => {
   try {
     const { provider, apiKey, action } = req.body;
     
@@ -1623,7 +1964,7 @@ app.post('/config/providers', authMiddleware, (req, res) => {
 });
 
 // Endpoint do dodawania niestandardowego providera
-app.post('/config/providers/custom', authMiddleware, (req, res) => {
+app.post('/config/providers/custom', (req, res) => {
   try {
     const { name, displayName, endpoint, apiKeys, apiKeyHeader, modelPrefix } = req.body;
     
@@ -1692,7 +2033,7 @@ app.delete('/config/providers/custom/:name', (req, res) => {
 });
 
 // Endpoint do zarządzania fallbackami
-app.post('/config/fallbacks', authMiddleware, (req, res) => {
+app.post('/config/fallbacks', (req, res) => {
   try {
     const { primaryModel, fallbackModel, action } = req.body;
     
