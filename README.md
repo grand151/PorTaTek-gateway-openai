@@ -7,11 +7,13 @@ Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowu
 - 🔄 Pełna emulacja API OpenAI (drop-in replacement)
 - 🆓 Wykorzystanie darmowych modeli z OpenRouter i Google Gemini
 - 🗺️ Automatyczne mapowanie modeli GPT na darmowe alternatywy
+- 🚀 Wsparcie dla emulacji GPT-5 i najnowszych modeli
 - 🔄 Automatyczny retry w przypadku błędów
 - 🔀 Fallback do alternatywnych modeli w przypadku awarii
 - 💾 Cachowanie odpowiedzi dla oszczędności czasu i zasobów
 - 🖼️ Obsługa modeli multimodalnych (tekst + obrazy)
 - 🤖 Wsparcie dla wielu providerów (OpenRouter, Google Gemini)
+- 🎛️ Panel konfiguracyjny z interfejsem webowym
 
 ## Dostępne modele
 
@@ -63,6 +65,10 @@ Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowu
 | gpt-4 | DeepSeek R1 | OpenRouter |
 | gpt-4o | Qwen3 235B | OpenRouter |
 | gpt-4o-mini | Qwen3 Next 80B | OpenRouter |
+| **gpt-5** | **Qwen3 235B** | **OpenRouter** |
+| **gpt-5-turbo** | **Qwen3 Next 80B** | **OpenRouter** |
+| **gpt-5-nano** | **OpenCode GPT-5 Nano** | **OpenRouter** |
+| **gpt-5-preview** | **Qwen3 235B** | **OpenRouter** |
 | gpt-4-vision | Qwen3 VL 235B | OpenRouter |
 | gpt-4-code | Qwen3 Coder | OpenRouter |
 | opencode-big-pickle | OpenCode Big Pickle | OpenRouter |
@@ -126,6 +132,38 @@ npm run dev
 
 Gateway będzie dostępny pod adresem `http://localhost:8787`.
 
+## Panel Konfiguracyjny
+
+Gateway posiada wbudowany panel konfiguracyjny dostępny pod adresem `http://localhost:8787/admin`.
+
+### Funkcje panelu:
+- 📊 **Dashboard** - Status systemu, providery API, statystyki
+- 🤖 **Modele** - Przeglądanie i dodawanie mapowań modeli
+- 🔄 **Fallbacki** - Lista łańcuchów fallbacków
+- ⚙️ **Konfiguracja** - Pełny widok konfiguracji JSON
+- 📡 **API Docs** - Dokumentacja endpointów i przykłady użycia
+
+### Zarządzanie modelami przez API:
+
+```bash
+# Dodanie nowego mapowania modelu
+curl -X POST "http://localhost:8787/config/models" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "openaiModel": "gpt-5-custom",
+    "targetModel": "qwen/qwen3-235b-a22b:free",
+    "provider": "openrouter"
+  }'
+
+# Pobranie aktualnej konfiguracji
+curl "http://localhost:8787/config"
+
+# Wyczyszczenie cache
+curl -X POST "http://localhost:8787/config/clear-cache"
+```
+
+**Uwaga:** Zmiany konfiguracji przez panel są tymczasowe (tylko w pamięci). Po restarcie serwera, konfiguracja wraca do wartości domyślnych.
+
 ## Użycie
 
 Możesz używać tego gateway dokładnie tak samo jak normalnego API OpenAI. Gateway automatycznie wykrywa i kieruje żądania do odpowiedniego providera.
@@ -182,6 +220,40 @@ curl -X POST "http://localhost:8787/v1/chat/completions" \
   }'
 ```
 
+### Przykład z modelami GPT-5 (emulacja)
+
+```bash
+# GPT-5 (mapowany na Qwen3 235B)
+curl -X POST "http://localhost:8787/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5",
+    "messages": [
+        {"role": "user", "content": "Co nowego w AI w 2026?"}
+    ]
+  }'
+
+# GPT-5 Turbo (mapowany na Qwen3 Next 80B)
+curl -X POST "http://localhost:8787/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5-turbo",
+    "messages": [
+        {"role": "user", "content": "Szybka odpowiedź na pytanie"}
+    ]
+  }'
+
+# GPT-5 Nano (mapowany na OpenCode GPT-5 Nano)
+curl -X POST "http://localhost:8787/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5-nano",
+    "messages": [
+        {"role": "user", "content": "Lekki i szybki model"}
+    ]
+  }'
+```
+
 ### Python (OpenAI SDK)
 
 ```python
@@ -231,6 +303,10 @@ console.log(response.choices[0].message.content);
 - `/v1/models` - lista dostępnych modeli
 - `/health` - sprawdzenie statusu serwera
 - `/` - informacje o gateway
+- `/admin` - panel konfiguracyjny (interfejs webowy)
+- `/config` - pobieranie konfiguracji (JSON)
+- `/config/models` - zarządzanie mapowaniem modeli (POST)
+- `/config/clear-cache` - czyszczenie cache (POST)
 
 ## Docker
 
