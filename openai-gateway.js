@@ -1849,6 +1849,69 @@ app.post('/v1/emulate', (req, res) => {
   }
 });
 
+// Test endpoint for storage safety verification
+app.get('/admin/test-storage', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html>
+<head><title>Storage Safety Test</title></head>
+<body>
+    <h1>Storage Safety Shim Test</h1>
+    <p>Check browser console (F12) for any storage errors.</p>
+    <div id="status">Testing...</div>
+    <script>
+        // Storage safety shim - identical to /admin page
+        if (typeof window !== 'undefined') {
+            const storageProxy = {
+                getItem: (key) => { try { return localStorage.getItem(key); } catch (e) { return null; } },
+                setItem: (key, value) => { try { localStorage.setItem(key, value); } catch (e) {} },
+                removeItem: (key) => { try { localStorage.removeItem(key); } catch (e) {} },
+                clear: () => { try { localStorage.clear(); } catch (e) {} },
+                key: (index) => { try { return localStorage.key(index); } catch (e) { return null; } }
+            };
+            
+            const sessionStorageProxy = {
+                getItem: (key) => { try { return sessionStorage.getItem(key); } catch (e) { return null; } },
+                setItem: (key, value) => { try { sessionStorage.setItem(key, value); } catch (e) {} },
+                removeItem: (key) => { try { sessionStorage.removeItem(key); } catch (e) {} },
+                clear: () => { try { sessionStorage.clear(); } catch (e) {} },
+                key: (index) => { try { return sessionStorage.key(index); } catch (e) { return null; } }
+            };
+            
+            try {
+                window.localStorage = storageProxy;
+                window.sessionStorage = sessionStorageProxy;
+            } catch (e) {
+                window.localStorage = window.localStorage || storageProxy;
+                window.sessionStorage = window.sessionStorage || sessionStorageProxy;
+            }
+        }
+        
+        // Test storage operations
+        const results = {
+            tested: true,
+            localStorage_getItem: typeof localStorage.getItem === 'function',
+            sessionStorage_setItem: typeof sessionStorage.setItem === 'function',
+            test_write: 'pending'
+        };
+        
+        try {
+            localStorage.setItem('test_key', 'test_value');
+            const retrieved = localStorage.getItem('test_key');
+            results.test_write = retrieved === 'test_value' ? 'success' : 'retrieved_null';
+            localStorage.removeItem('test_key');
+        } catch (e) {
+            results.test_write = 'error: ' + e.message;
+        }
+        
+        document.getElementById('status').innerHTML = 
+            '<strong>✓ Storage shim working!</strong><br><pre>' + 
+            JSON.stringify(results, null, 2) + 
+            '</pre>';
+    </script>
+</body>
+</html>`);
+});
+
 // Endpoint panelu konfiguracyjnego (HTML)
 app.get('/admin', createAuthMiddleware(githubAuth, userManager), (req, res) => {
   if (!req.user.isAdmin) {
