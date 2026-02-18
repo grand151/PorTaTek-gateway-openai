@@ -1919,7 +1919,8 @@ app.use((err, req, res, next) => {
 // Uruchomienie serwera
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OpenAI Gateway running on 0.0.0.0:${PORT}`);
-  console.log(`Visit http://0.0.0.0:${PORT}/health or http://localhost:${PORT}/health for status`);
+  console.log(`Local: http://localhost:${PORT}/health`);
+  console.log(`External: http://<your-server-ip>:${PORT}/health`);
 });
 
 module.exports = app;
