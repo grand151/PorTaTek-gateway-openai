@@ -40,6 +40,13 @@ Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowu
 - **gemma-2-9b** - open source, uniwersalny
 - **gemma-2-2b** - najmniejszy, najszybszy
 
+#### OpenCode (nowe modele)
+- **big-pickle** - model opencode
+- **glm-5-free** - model opencode GLM-5
+- **gpt-5-nano** - model opencode GPT-5 Nano
+- **kimi-k2.5-free** - model opencode Kimi K2.5
+- **minimax-m2.5-free** - model opencode Minimax M2.5
+
 ### Modele Google Gemini (bezpośrednie API)
 
 - **gemini-3-flash** - najnowszy, ultraszybki
@@ -58,6 +65,11 @@ Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowu
 | gpt-4o-mini | Qwen3 Next 80B | OpenRouter |
 | gpt-4-vision | Qwen3 VL 235B | OpenRouter |
 | gpt-4-code | Qwen3 Coder | OpenRouter |
+| opencode-big-pickle | OpenCode Big Pickle | OpenRouter |
+| opencode-glm-5 | OpenCode GLM-5 | OpenRouter |
+| opencode-gpt-5-nano | OpenCode GPT-5 Nano | OpenRouter |
+| opencode-kimi-k2.5 | OpenCode Kimi K2.5 | OpenRouter |
+| opencode-minimax-m2.5 | OpenCode Minimax M2.5 | OpenRouter |
 | gemini-3-flash | Gemini 3 Flash | Google Gemini |
 | gemini-1.5-pro | Gemini 1.5 Pro | Google Gemini |
 | text-embedding-ada-002 | Mistral Embed | OpenRouter |
