@@ -7,7 +7,11 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const dotenv = require('dotenv');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { createOpencodeClient } = require('@opencode-ai/sdk');
+// const { createOpencodeClient } = require('@opencode-ai/sdk'); // Zakomentariowane - SDK package ma problemy z package.json exports
+
+const GitHubAuthManager = require('./auth');
+const UserManager = require('./users');
+const { createAuthMiddleware, optionalAuthMiddleware } = require('./middleware');
 
 // Załadowanie zmiennych środowiskowych
 dotenv.config();
@@ -203,6 +207,18 @@ const CACHE_TTL = parseInt(process.env.CACHE_TTL || '3600000', 10);
 // Konfiguracja middleware
 app.use(cors());
 app.use(bodyParser.json());
+
+// Inicjalizacja auth systemów
+const userManager = new UserManager('./users-db.json');
+const githubAuth = new GitHubAuthManager({
+  clientId: process.env.GITHUB_CLIENT_ID,
+  clientSecret: process.env.GITHUB_CLIENT_SECRET,
+  callbackURL: process.env.GITHUB_CALLBACK_URL || 'http://localhost:8787/auth/github/callback',
+  jwtSecret: process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-me'
+});
+
+const authMiddleware = createAuthMiddleware(githubAuth, userManager);
+const optionalAuth = optionalAuthMiddleware(githubAuth, userManager);
 
 // Mapowanie modeli OpenAI na modele OpenRouter
 const MODEL_MAPPING = {
@@ -685,6 +701,82 @@ app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
 });
+
+// ============= AUTH ROUTES =============
+
+// Login page / redirect to GitHub OAuth
+app.get('/login', (req, res) => {
+  const clientId = process.env.GITHUB_CLIENT_ID;
+  if (!clientId) {
+    return res.status(500).json({ error: 'GitHub OAuth not configured (missing GITHUB_CLIENT_ID)' });
+  }
+  const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=repo,user,gist`;
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head><title>Login - PorTaTek Gateway</title></head>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+      <div style="background: white; padding: 40px; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); text-align: center; max-width: 400px;">
+        <h1>PorTaTek Gateway</h1>
+        <p style="color: #666; margin: 20px 0;">Sign in with your GitHub account to access the admin panel and API</p>
+        <a href="${githubAuthUrl}" style="display: inline-block; background: #333; color: white; padding: 12px 30px; border-radius: 5px; text-decoration: none; font-weight: 600; margin-top: 20px; transition: background 0.3s;">
+          Sign in with GitHub
+        </a>
+        <p style="color: #999; font-size: 12px; margin-top: 30px;">This application requires GitHub authentication to access full API and admin features.</p>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+// GitHub OAuth callback
+app.get('/auth/github/callback', async (req, res) => {
+  const { code, error, error_description } = req.query;
+  
+  if (error) {
+    return res.status(400).json({ error: error_description || 'GitHub authentication failed' });
+  }
+  
+  if (!code) {
+    return res.status(400).json({ error: 'Missing authorization code' });
+  }
+  
+  try {
+    const result = await githubAuth.handleCallback(code);
+    
+    // Utwórz sesję i token
+    const user = await userManager.createOrUpdateUser(result.user);
+    const token = githubAuth.generateJWT({ userId: user.id, username: user.login });
+    
+    // Redirect to admin panel z token w cookie
+    res.cookie('auth_token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+    
+    res.redirect('/admin?success=true');
+  } catch (error) {
+    console.error('Auth callback error:', error);
+    res.status(500).json({ error: 'Authentication failed: ' + error.message });
+  }
+});
+
+// Get current user info
+app.get('/auth/me', authMiddleware, (req, res) => {
+  res.json({
+    user: req.user,
+    authenticated: true
+  });
+});
+
+// Logout
+app.post('/auth/logout', (req, res) => {
+  res.clearCookie('auth_token');
+  res.json({ message: 'Logged out successfully' });
+});
+
+// ============= END AUTH ROUTES =============
 
 // Endpoint dla /v1/chat/completions
 app.post('/v1/chat/completions', async (req, res) => {
@@ -1322,12 +1414,12 @@ app.post('/v1/emulate', (req, res) => {
 });
 
 // Endpoint panelu konfiguracyjnego (HTML)
-app.get('/admin', (req, res) => {
+app.get('/admin', authMiddleware, (req, res) => {
   res.send(getConfigPanelHTML());
 });
 
 // Endpoint do pobrania konfiguracji
-app.get('/config', (req, res) => {
+app.get('/config', optionalAuth, (req, res) => {
   res.json({
     modelMapping: MODEL_MAPPING,
     fallbackMapping: FALLBACK_MAPPING,
@@ -1363,7 +1455,7 @@ app.get('/config', (req, res) => {
 });
 
 // Endpoint do aktualizacji konfiguracji modeli (tylko w pamięci, nie zapisuje do pliku)
-app.post('/config/models', (req, res) => {
+app.post('/config/models', authMiddleware, (req, res) => {
   try {
     const { openaiModel, targetModel, provider } = req.body;
     
@@ -1398,7 +1490,7 @@ app.post('/config/models', (req, res) => {
 });
 
 // Endpoint do czyszczenia cache'a
-app.post('/config/clear-cache', (req, res) => {
+app.post('/config/clear-cache', authMiddleware, (req, res) => {
   const cacheSize = responseCache.size;
   responseCache.clear();
   res.json({
@@ -1472,7 +1564,7 @@ app.delete('/session/:sessionId', (req, res) => {
 });
 
 // Endpoint do dodawania/aktualizacji kluczy API dla providerów
-app.post('/config/providers', (req, res) => {
+app.post('/config/providers', authMiddleware, (req, res) => {
   try {
     const { provider, apiKey, action } = req.body;
     
@@ -1531,7 +1623,7 @@ app.post('/config/providers', (req, res) => {
 });
 
 // Endpoint do dodawania niestandardowego providera
-app.post('/config/providers/custom', (req, res) => {
+app.post('/config/providers/custom', authMiddleware, (req, res) => {
   try {
     const { name, displayName, endpoint, apiKeys, apiKeyHeader, modelPrefix } = req.body;
     
@@ -1600,7 +1692,7 @@ app.delete('/config/providers/custom/:name', (req, res) => {
 });
 
 // Endpoint do zarządzania fallbackami
-app.post('/config/fallbacks', (req, res) => {
+app.post('/config/fallbacks', authMiddleware, (req, res) => {
   try {
     const { primaryModel, fallbackModel, action } = req.body;
     
