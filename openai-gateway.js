@@ -149,6 +149,8 @@ const FALLBACK_MAPPING = {
 const responseCache = new Map();
 
 // Zarządzanie wieloma kluczami API dla providerów (in-memory storage)
+// UWAGA: Konfiguracja jest przechowywana tylko w pamięci i zostanie zresetowana po restarcie serwera
+// Dla trwałej konfiguracji używaj zmiennych środowiskowych w pliku .env
 const providerApiKeys = {
   openrouter: OPENROUTER_API_KEY ? [OPENROUTER_API_KEY] : [],
   gemini: GEMINI_API_KEY ? [GEMINI_API_KEY] : []
@@ -162,7 +164,14 @@ const providerKeyIndex = {
 
 // Konfiguracja niestandardowych providerów
 const customProviders = new Map();
-// Format: { name: string, endpoint: string, apiKeyHeader: string, modelPrefix: string }
+// Format: { 
+//   name: string, 
+//   displayName: string, 
+//   endpoint: string, 
+//   apiKeys: string[], 
+//   apiKeyHeader: string, 
+//   modelPrefix: string 
+// }
 
 // Funkcja do generowania klucza cache'a
 function generateCacheKey(model, messages, options) {
@@ -444,7 +453,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       if (!openrouterKey) {
         return res.status(503).json({
           error: {
-            message: 'OpenRouter API is not configured. Please set OPENROUTER_API_KEY or add keys via /config/providers.',
+            message: 'OpenRouter API is not configured. Please add API keys via /config/providers endpoint or the admin panel.',
             type: 'configuration_error',
             code: 'openrouter_not_configured'
           }
@@ -539,7 +548,7 @@ app.post('/v1/embeddings', async (req, res) => {
     if (!openrouterKey) {
       return res.status(503).json({
         error: {
-          message: 'OpenRouter API is not configured. Please set OPENROUTER_API_KEY or add keys via /config/providers.',
+          message: 'OpenRouter API is not configured. Please add API keys via /config/providers endpoint or the admin panel.',
           type: 'configuration_error',
           code: 'openrouter_not_configured'
         }
@@ -836,10 +845,10 @@ app.post('/config/providers/custom', (req, res) => {
       });
     }
     
-    // Walidacja nazwy providera (tylko alfanumeryczne i myślniki)
-    if (!/^[a-z0-9-]+$/i.test(name)) {
+    // Walidacja nazwy providera (tylko małe litery, cyfry i myślniki)
+    if (!/^[a-z0-9-]+$/.test(name)) {
       return res.status(400).json({
-        error: 'Provider name must contain only alphanumeric characters and hyphens'
+        error: 'Provider name must contain only lowercase letters, numbers and hyphens'
       });
     }
     
@@ -1350,8 +1359,8 @@ function getConfigPanelHTML() {
                     <form onsubmit="addCustomProvider(event)">
                         <div class="form-group">
                             <label>Nazwa providera:</label>
-                            <input type="text" id="custom-provider-name" placeholder="np. opencode-ai" pattern="[a-zA-Z0-9-]+" required>
-                            <small style="color: #666;">Tylko litery, cyfry i myślniki</small>
+                            <input type="text" id="custom-provider-name" placeholder="np. opencode-ai" pattern="[a-z0-9-]+" required>
+                            <small style="color: #666;">Tylko małe litery, cyfry i myślniki</small>
                         </div>
                         <div class="form-group">
                             <label>Wyświetlana nazwa:</label>
