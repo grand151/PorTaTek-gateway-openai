@@ -41,11 +41,11 @@ Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowu
 - **gemma-2-2b** - najmniejszy, najszybszy
 
 #### OpenCode (nowe modele)
-- **big-pickle** - model opencode
-- **glm-5-free** - model opencode GLM-5
-- **gpt-5-nano** - model opencode GPT-5 Nano
-- **kimi-k2.5-free** - model opencode Kimi K2.5
-- **minimax-m2.5-free** - model opencode Minimax M2.5
+- **opencode-big-pickle** - model opencode Big Pickle
+- **opencode-glm-5** - model opencode GLM-5
+- **opencode-gpt-5-nano** - model opencode GPT-5 Nano
+- **opencode-kimi-k2.5** - model opencode Kimi K2.5
+- **opencode-minimax-m2.5** - model opencode Minimax M2.5
 
 ### Modele Google Gemini (bezpośrednie API)
 
@@ -165,6 +165,19 @@ curl -X POST "http://localhost:8787/v1/chat/completions" \
     "model": "gpt-4-code",
     "messages": [
         {"role": "user", "content": "Napisz funkcję sortującą w Python"}
+    ]
+  }'
+```
+
+### Przykład z modelami OpenCode
+
+```bash
+curl -X POST "http://localhost:8787/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "opencode-big-pickle",
+    "messages": [
+        {"role": "user", "content": "Wyjaśnij koncepcję machine learning"}
     ]
   }'
 ```
