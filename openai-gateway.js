@@ -148,6 +148,22 @@ const FALLBACK_MAPPING = {
 // Konfiguracja cache'a dla odpowiedzi
 const responseCache = new Map();
 
+// Zarządzanie wieloma kluczami API dla providerów (in-memory storage)
+const providerApiKeys = {
+  openrouter: OPENROUTER_API_KEY ? [OPENROUTER_API_KEY] : [],
+  gemini: GEMINI_API_KEY ? [GEMINI_API_KEY] : []
+};
+
+// Indeksy aktualnie używanych kluczy (dla round-robin)
+const providerKeyIndex = {
+  openrouter: 0,
+  gemini: 0
+};
+
+// Konfiguracja niestandardowych providerów
+const customProviders = new Map();
+// Format: { name: string, endpoint: string, apiKeyHeader: string, modelPrefix: string }
+
 // Funkcja do generowania klucza cache'a
 function generateCacheKey(model, messages, options) {
   return JSON.stringify({
@@ -155,6 +171,23 @@ function generateCacheKey(model, messages, options) {
     messages,
     options
   });
+}
+
+// Funkcja do pobierania klucza API z round-robin
+function getProviderApiKey(providerName) {
+  const keys = providerApiKeys[providerName];
+  if (!keys || keys.length === 0) {
+    return null;
+  }
+  
+  // Round-robin selection
+  const index = providerKeyIndex[providerName] || 0;
+  const key = keys[index];
+  
+  // Update index for next call
+  providerKeyIndex[providerName] = (index + 1) % keys.length;
+  
+  return key;
 }
 
 // Opóźnienie wykonania (do mechanizmu retry)
@@ -407,10 +440,11 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     } else {
       // Obsługa przez OpenRouter (domyślna)
-      if (!OPENROUTER_API_KEY) {
+      const openrouterKey = getProviderApiKey('openrouter');
+      if (!openrouterKey) {
         return res.status(503).json({
           error: {
-            message: 'OpenRouter API is not configured. Please set OPENROUTER_API_KEY.',
+            message: 'OpenRouter API is not configured. Please set OPENROUTER_API_KEY or add keys via /config/providers.',
             type: 'configuration_error',
             code: 'openrouter_not_configured'
           }
@@ -428,7 +462,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       // Nagłówki dla OpenRouter
       const headers = {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'Authorization': `Bearer ${openrouterKey}`,
         'HTTP-Referer': req.headers.referer || 'http://localhost:8787',
         'X-Title': 'OpenAI Gateway Emulator'
       };
@@ -501,6 +535,17 @@ app.post('/v1/embeddings', async (req, res) => {
     // Mapowanie modelu embeddings
     const model = MODEL_MAPPING[requestedModel] || MODEL_MAPPING['text-embedding-ada-002'];
     
+    const openrouterKey = getProviderApiKey('openrouter');
+    if (!openrouterKey) {
+      return res.status(503).json({
+        error: {
+          message: 'OpenRouter API is not configured. Please set OPENROUTER_API_KEY or add keys via /config/providers.',
+          type: 'configuration_error',
+          code: 'openrouter_not_configured'
+        }
+      });
+    }
+    
     // Przygotowanie zapytania do OpenRouter
     const openRouterRequest = {
       model,
@@ -511,7 +556,7 @@ app.post('/v1/embeddings', async (req, res) => {
     // Nagłówki dla OpenRouter
     const headers = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'Authorization': `Bearer ${openrouterKey}`,
       'HTTP-Referer': req.headers.referer || 'http://localhost:8787',
       'X-Title': 'OpenAI Gateway Emulator'
     };
@@ -618,13 +663,28 @@ app.get('/config', (req, res) => {
     modelMapping: MODEL_MAPPING,
     fallbackMapping: FALLBACK_MAPPING,
     modelProvider: MODEL_PROVIDER,
+    providers: {
+      openrouter: {
+        configured: providerApiKeys.openrouter.length > 0,
+        keyCount: providerApiKeys.openrouter.length
+      },
+      gemini: {
+        configured: providerApiKeys.gemini.length > 0,
+        keyCount: providerApiKeys.gemini.length
+      },
+      custom: Array.from(customProviders.entries()).map(([name, config]) => ({
+        name,
+        endpoint: config.endpoint,
+        configured: true
+      }))
+    },
     settings: {
       port: PORT,
       maxRetries: MAX_RETRIES,
       retryDelay: RETRY_DELAY,
       cacheTTL: CACHE_TTL,
-      openrouterConfigured: !!OPENROUTER_API_KEY,
-      geminiConfigured: !!GEMINI_API_KEY
+      openrouterConfigured: providerApiKeys.openrouter.length > 0,
+      geminiConfigured: providerApiKeys.gemini.length > 0
     },
     stats: {
       cacheSize: responseCache.size,
@@ -676,6 +736,194 @@ app.post('/config/clear-cache', (req, res) => {
     success: true,
     message: `Cache cleared. Removed ${cacheSize} entries.`
   });
+});
+
+// Endpoint do zarządzania providerami i kluczami API
+app.get('/config/providers', (req, res) => {
+  res.json({
+    providers: {
+      openrouter: {
+        name: 'OpenRouter',
+        configured: providerApiKeys.openrouter.length > 0,
+        keyCount: providerApiKeys.openrouter.length,
+        endpoint: 'https://openrouter.ai/api/v1'
+      },
+      gemini: {
+        name: 'Google Gemini',
+        configured: providerApiKeys.gemini.length > 0,
+        keyCount: providerApiKeys.gemini.length,
+        endpoint: 'Direct Google API'
+      },
+      custom: Array.from(customProviders.entries()).map(([name, config]) => ({
+        name,
+        displayName: config.displayName || name,
+        endpoint: config.endpoint,
+        configured: config.apiKeys && config.apiKeys.length > 0,
+        keyCount: config.apiKeys ? config.apiKeys.length : 0,
+        modelPrefix: config.modelPrefix
+      }))
+    }
+  });
+});
+
+// Endpoint do dodawania/aktualizacji kluczy API dla providerów
+app.post('/config/providers', (req, res) => {
+  try {
+    const { provider, apiKey, action } = req.body;
+    
+    if (!provider || !apiKey) {
+      return res.status(400).json({
+        error: 'Missing required fields: provider, apiKey'
+      });
+    }
+    
+    // Walidacja providera
+    if (!['openrouter', 'gemini'].includes(provider)) {
+      return res.status(400).json({
+        error: 'Invalid provider. Supported: openrouter, gemini'
+      });
+    }
+    
+    if (action === 'remove') {
+      // Usuwanie klucza
+      const index = providerApiKeys[provider].indexOf(apiKey);
+      if (index > -1) {
+        providerApiKeys[provider].splice(index, 1);
+      }
+      
+      // Reset Gemini client if all keys removed
+      if (provider === 'gemini' && providerApiKeys.gemini.length === 0) {
+        geminiClient = null;
+      }
+      
+      return res.json({
+        success: true,
+        message: `API key removed from ${provider}`,
+        keyCount: providerApiKeys[provider].length
+      });
+    } else {
+      // Dodawanie klucza (domyślna akcja)
+      if (!providerApiKeys[provider].includes(apiKey)) {
+        providerApiKeys[provider].push(apiKey);
+        
+        // Initialize Gemini client if first Gemini key
+        if (provider === 'gemini' && !geminiClient) {
+          geminiClient = new GoogleGenerativeAI(apiKey);
+        }
+      }
+      
+      return res.json({
+        success: true,
+        message: `API key added to ${provider}`,
+        keyCount: providerApiKeys[provider].length
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+// Endpoint do dodawania niestandardowego providera
+app.post('/config/providers/custom', (req, res) => {
+  try {
+    const { name, displayName, endpoint, apiKeys, apiKeyHeader, modelPrefix } = req.body;
+    
+    if (!name || !endpoint) {
+      return res.status(400).json({
+        error: 'Missing required fields: name, endpoint'
+      });
+    }
+    
+    // Walidacja nazwy providera (tylko alfanumeryczne i myślniki)
+    if (!/^[a-z0-9-]+$/i.test(name)) {
+      return res.status(400).json({
+        error: 'Provider name must contain only alphanumeric characters and hyphens'
+      });
+    }
+    
+    // Sprawdzenie czy nazwa nie koliduje z wbudowanymi providerami
+    if (['openrouter', 'gemini'].includes(name.toLowerCase())) {
+      return res.status(400).json({
+        error: 'Cannot use reserved provider names: openrouter, gemini'
+      });
+    }
+    
+    customProviders.set(name, {
+      displayName: displayName || name,
+      endpoint,
+      apiKeys: Array.isArray(apiKeys) ? apiKeys : (apiKeys ? [apiKeys] : []),
+      apiKeyHeader: apiKeyHeader || 'Authorization',
+      modelPrefix: modelPrefix || name
+    });
+    
+    res.json({
+      success: true,
+      message: `Custom provider '${name}' added successfully`,
+      provider: customProviders.get(name)
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+// Endpoint do usuwania niestandardowego providera
+app.delete('/config/providers/custom/:name', (req, res) => {
+  try {
+    const { name } = req.params;
+    
+    if (!customProviders.has(name)) {
+      return res.status(404).json({
+        error: `Custom provider '${name}' not found`
+      });
+    }
+    
+    customProviders.delete(name);
+    
+    res.json({
+      success: true,
+      message: `Custom provider '${name}' removed successfully`
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+// Endpoint do zarządzania fallbackami
+app.post('/config/fallbacks', (req, res) => {
+  try {
+    const { primaryModel, fallbackModel, action } = req.body;
+    
+    if (!primaryModel || !fallbackModel) {
+      return res.status(400).json({
+        error: 'Missing required fields: primaryModel, fallbackModel'
+      });
+    }
+    
+    if (action === 'remove') {
+      delete FALLBACK_MAPPING[primaryModel];
+      return res.json({
+        success: true,
+        message: `Fallback removed for ${primaryModel}`
+      });
+    } else {
+      FALLBACK_MAPPING[primaryModel] = fallbackModel;
+      return res.json({
+        success: true,
+        message: `Fallback added: ${primaryModel} -> ${fallbackModel}`,
+        fallbackMapping: FALLBACK_MAPPING
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
 });
 
 // Funkcja generująca HTML panelu konfiguracyjnego
@@ -1009,6 +1257,7 @@ function getConfigPanelHTML() {
         <div class="content">
             <div class="tabs">
                 <button class="tab active" onclick="switchTab('dashboard')">📊 Dashboard</button>
+                <button class="tab" onclick="switchTab('providers')">🔑 Providery</button>
                 <button class="tab" onclick="switchTab('models')">🤖 Modele</button>
                 <button class="tab" onclick="switchTab('fallbacks')">🔄 Fallbacki</button>
                 <button class="tab" onclick="switchTab('config')">⚙️ Konfiguracja</button>
@@ -1071,6 +1320,64 @@ function getConfigPanelHTML() {
                 </div>
             </div>
             
+            <div id="providers" class="tab-content">
+                <h2 style="margin-bottom: 20px;">Zarządzanie Providerami API</h2>
+                
+                <div id="providers-list"></div>
+                
+                <div class="card" style="margin-top: 30px;">
+                    <h3>➕ Dodaj klucz API do providera</h3>
+                    <div id="add-key-result"></div>
+                    <form onsubmit="addProviderKey(event)">
+                        <div class="form-group">
+                            <label>Provider:</label>
+                            <select id="key-provider" required>
+                                <option value="openrouter">OpenRouter</option>
+                                <option value="gemini">Google Gemini</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Klucz API:</label>
+                            <input type="password" id="new-api-key" placeholder="Wklej swój klucz API" required>
+                        </div>
+                        <button type="submit">💾 Dodaj klucz</button>
+                    </form>
+                </div>
+                
+                <div class="card" style="margin-top: 30px;">
+                    <h3>🔧 Dodaj niestandardowy provider</h3>
+                    <div id="add-custom-provider-result"></div>
+                    <form onsubmit="addCustomProvider(event)">
+                        <div class="form-group">
+                            <label>Nazwa providera:</label>
+                            <input type="text" id="custom-provider-name" placeholder="np. opencode-ai" pattern="[a-zA-Z0-9-]+" required>
+                            <small style="color: #666;">Tylko litery, cyfry i myślniki</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Wyświetlana nazwa:</label>
+                            <input type="text" id="custom-provider-display-name" placeholder="np. OpenCode.ai">
+                        </div>
+                        <div class="form-group">
+                            <label>Endpoint URL:</label>
+                            <input type="url" id="custom-provider-endpoint" placeholder="https://api.opencode.ai/v1" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Klucze API (oddzielone przecinkami):</label>
+                            <input type="text" id="custom-provider-keys" placeholder="klucz1,klucz2,klucz3">
+                        </div>
+                        <div class="form-group">
+                            <label>Nagłówek autoryzacji:</label>
+                            <input type="text" id="custom-provider-auth-header" placeholder="Authorization" value="Authorization">
+                        </div>
+                        <div class="form-group">
+                            <label>Prefiks modeli:</label>
+                            <input type="text" id="custom-provider-model-prefix" placeholder="np. opencode">
+                        </div>
+                        <button type="submit">💾 Dodaj niestandardowy provider</button>
+                    </form>
+                </div>
+            </div>
+            
             <div id="models" class="tab-content">
                 <h2 style="margin-bottom: 20px;">Mapowanie modeli OpenAI</h2>
                 <div id="models-list"></div>
@@ -1102,6 +1409,22 @@ function getConfigPanelHTML() {
             <div id="fallbacks" class="tab-content">
                 <h2 style="margin-bottom: 20px;">Łańcuchy fallbacków</h2>
                 <div id="fallbacks-list"></div>
+                
+                <div class="card" style="margin-top: 30px;">
+                    <h3>➕ Dodaj fallback</h3>
+                    <div id="add-fallback-result"></div>
+                    <form onsubmit="addFallback(event)">
+                        <div class="form-group">
+                            <label>Model główny:</label>
+                            <input type="text" id="fallback-primary-model" placeholder="np. deepseek/deepseek-r1-0528:free" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Model fallback:</label>
+                            <input type="text" id="fallback-fallback-model" placeholder="np. qwen/qwen3-235b-a22b:free" required>
+                        </div>
+                        <button type="submit">💾 Dodaj fallback</button>
+                    </form>
+                </div>
             </div>
             
             <div id="config" class="tab-content">
@@ -1149,6 +1472,51 @@ function getConfigPanelHTML() {
                     <span class="endpoint-method method-post">POST</span>
                     <strong>/config/clear-cache</strong>
                     <p style="margin-top: 10px; color: #666;">Wyczyść cache odpowiedzi</p>
+                </div>
+                
+                <div class="endpoint-card">
+                    <span class="endpoint-method method-get">GET</span>
+                    <strong>/config/providers</strong>
+                    <p style="margin-top: 10px; color: #666;">Pobierz listę wszystkich providerów i ich status</p>
+                </div>
+                
+                <div class="endpoint-card">
+                    <span class="endpoint-method method-post">POST</span>
+                    <strong>/config/providers</strong>
+                    <p style="margin-top: 10px; color: #666;">Dodaj/usuń klucz API dla providera</p>
+                    <div class="code-block" style="margin-top: 10px;">
+{
+  "provider": "openrouter",
+  "apiKey": "sk-or-v1-xxx...",
+  "action": "add"
+}</div>
+                </div>
+                
+                <div class="endpoint-card">
+                    <span class="endpoint-method method-post">POST</span>
+                    <strong>/config/providers/custom</strong>
+                    <p style="margin-top: 10px; color: #666;">Dodaj niestandardowy provider</p>
+                    <div class="code-block" style="margin-top: 10px;">
+{
+  "name": "opencode-ai",
+  "displayName": "OpenCode.ai",
+  "endpoint": "https://api.opencode.ai/v1",
+  "apiKeys": ["key1", "key2"],
+  "apiKeyHeader": "Authorization",
+  "modelPrefix": "opencode"
+}</div>
+                </div>
+                
+                <div class="endpoint-card">
+                    <span class="endpoint-method method-post">POST</span>
+                    <strong>/config/fallbacks</strong>
+                    <p style="margin-top: 10px; color: #666;">Dodaj/usuń mapowanie fallback</p>
+                    <div class="code-block" style="margin-top: 10px;">
+{
+  "primaryModel": "deepseek/deepseek-r1-0528:free",
+  "fallbackModel": "qwen/qwen3-235b-a22b:free",
+  "action": "add"
+}</div>
                 </div>
                 
                 <div class="card" style="margin-top: 20px;">
@@ -1201,6 +1569,7 @@ print(response.choices[0].message.content)</div>
                 const response = await fetch('/config');
                 configData = await response.json();
                 updateDashboard();
+                updateProvidersTable();
                 updateModelsTable();
                 updateFallbacksTable();
                 updateConfigJSON();
@@ -1266,6 +1635,58 @@ print(response.choices[0].message.content)</div>
             document.getElementById('fallbacks-list').innerHTML = html;
         }
         
+        async function updateProvidersTable() {
+            try {
+                const response = await fetch('/config/providers');
+                const providersData = await response.json();
+                
+                if (!providersData || !providersData.providers) return;
+                
+                let html = '<div class="card"><h3>🔌 Wbudowane Providery</h3><table><thead><tr><th>Provider</th><th>Status</th><th>Liczba kluczy</th><th>Endpoint</th></tr></thead><tbody>';
+                
+                // OpenRouter
+                const openrouter = providersData.providers.openrouter;
+                html += \`<tr>
+                    <td><strong>OpenRouter</strong></td>
+                    <td><span class="status-badge \${openrouter.configured ? 'status-ok' : 'status-error'}">\${openrouter.configured ? '✓ Aktywny' : '✗ Nieaktywny'}</span></td>
+                    <td>\${openrouter.keyCount}</td>
+                    <td><code>\${openrouter.endpoint}</code></td>
+                </tr>\`;
+                
+                // Gemini
+                const gemini = providersData.providers.gemini;
+                html += \`<tr>
+                    <td><strong>Google Gemini</strong></td>
+                    <td><span class="status-badge \${gemini.configured ? 'status-ok' : 'status-error'}">\${gemini.configured ? '✓ Aktywny' : '✗ Nieaktywny'}</span></td>
+                    <td>\${gemini.keyCount}</td>
+                    <td><code>\${gemini.endpoint}</code></td>
+                </tr>\`;
+                
+                html += '</tbody></table></div>';
+                
+                // Custom providers
+                if (providersData.providers.custom && providersData.providers.custom.length > 0) {
+                    html += '<div class="card" style="margin-top: 20px;"><h3>🔧 Niestandardowe Providery</h3><table><thead><tr><th>Nazwa</th><th>Status</th><th>Liczba kluczy</th><th>Endpoint</th><th>Akcje</th></tr></thead><tbody>';
+                    
+                    for (const provider of providersData.providers.custom) {
+                        html += \`<tr>
+                            <td><strong>\${provider.displayName || provider.name}</strong></td>
+                            <td><span class="status-badge \${provider.configured ? 'status-ok' : 'status-error'}">\${provider.configured ? '✓ Aktywny' : '✗ Nieaktywny'}</span></td>
+                            <td>\${provider.keyCount || 0}</td>
+                            <td><code>\${provider.endpoint}</code></td>
+                            <td><button class="btn-danger" onclick="removeCustomProvider('\${provider.name}')" style="padding: 6px 12px; font-size: 14px;">Usuń</button></td>
+                        </tr>\`;
+                    }
+                    
+                    html += '</tbody></table></div>';
+                }
+                
+                document.getElementById('providers-list').innerHTML = html;
+            } catch (error) {
+                console.error('Error updating providers table:', error);
+            }
+        }
+        
         function updateConfigJSON() {
             if (!configData) return;
             document.getElementById('config-json').textContent = JSON.stringify(configData, null, 2);
@@ -1320,6 +1741,135 @@ print(response.choices[0].message.content)</div>
             } catch (error) {
                 alert('Błąd czyszczenia cache: ' + error.message);
             }
+        }
+        
+        async function addProviderKey(event) {
+            event.preventDefault();
+            
+            const provider = document.getElementById('key-provider').value;
+            const apiKey = document.getElementById('new-api-key').value;
+            
+            try {
+                const response = await fetch('/config/providers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider, apiKey })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('add-key-result').innerHTML = 
+                        '<div class="alert alert-success">✓ Klucz API dodany pomyślnie!</div>';
+                    loadConfig();
+                    event.target.reset();
+                } else {
+                    document.getElementById('add-key-result').innerHTML = 
+                        \`<div class="alert alert-error">✗ Błąd: \${result.error}</div>\`;
+                }
+            } catch (error) {
+                document.getElementById('add-key-result').innerHTML = 
+                    \`<div class="alert alert-error">✗ Błąd połączenia: \${error.message}</div>\`;
+            }
+            
+            setTimeout(() => {
+                document.getElementById('add-key-result').innerHTML = '';
+            }, 5000);
+        }
+        
+        async function addCustomProvider(event) {
+            event.preventDefault();
+            
+            const name = document.getElementById('custom-provider-name').value;
+            const displayName = document.getElementById('custom-provider-display-name').value;
+            const endpoint = document.getElementById('custom-provider-endpoint').value;
+            const keysStr = document.getElementById('custom-provider-keys').value;
+            const apiKeyHeader = document.getElementById('custom-provider-auth-header').value;
+            const modelPrefix = document.getElementById('custom-provider-model-prefix').value;
+            
+            const apiKeys = keysStr ? keysStr.split(',').map(k => k.trim()).filter(k => k) : [];
+            
+            try {
+                const response = await fetch('/config/providers/custom', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, displayName, endpoint, apiKeys, apiKeyHeader, modelPrefix })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('add-custom-provider-result').innerHTML = 
+                        '<div class="alert alert-success">✓ Niestandardowy provider dodany pomyślnie!</div>';
+                    loadConfig();
+                    event.target.reset();
+                } else {
+                    document.getElementById('add-custom-provider-result').innerHTML = 
+                        \`<div class="alert alert-error">✗ Błąd: \${result.error}</div>\`;
+                }
+            } catch (error) {
+                document.getElementById('add-custom-provider-result').innerHTML = 
+                    \`<div class="alert alert-error">✗ Błąd połączenia: \${error.message}</div>\`;
+            }
+            
+            setTimeout(() => {
+                document.getElementById('add-custom-provider-result').innerHTML = '';
+            }, 5000);
+        }
+        
+        async function removeCustomProvider(name) {
+            if (!confirm(\`Czy na pewno chcesz usunąć providera '\${name}'?\`)) return;
+            
+            try {
+                const response = await fetch(\`/config/providers/custom/\${name}\`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert(result.message);
+                    loadConfig();
+                } else {
+                    alert('Błąd: ' + result.error);
+                }
+            } catch (error) {
+                alert('Błąd połączenia: ' + error.message);
+            }
+        }
+        
+        async function addFallback(event) {
+            event.preventDefault();
+            
+            const primaryModel = document.getElementById('fallback-primary-model').value;
+            const fallbackModel = document.getElementById('fallback-fallback-model').value;
+            
+            try {
+                const response = await fetch('/config/fallbacks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ primaryModel, fallbackModel })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('add-fallback-result').innerHTML = 
+                        '<div class="alert alert-success">✓ Fallback dodany pomyślnie!</div>';
+                    loadConfig();
+                    event.target.reset();
+                } else {
+                    document.getElementById('add-fallback-result').innerHTML = 
+                        \`<div class="alert alert-error">✗ Błąd: \${result.error}</div>\`;
+                }
+            } catch (error) {
+                document.getElementById('add-fallback-result').innerHTML = 
+                    \`<div class="alert alert-error">✗ Błąd połączenia: \${error.message}</div>\`;
+            }
+            
+            setTimeout(() => {
+                document.getElementById('add-fallback-result').innerHTML = '';
+            }, 5000);
         }
         
         // Load config on page load
