@@ -1,7 +1,7 @@
 {
   "name": "openai-openrouter-gateway",
   "version": "1.0.0",
-  "description": "Gateway emulujący API OpenAI z wykorzystaniem darmowych modeli OpenRouter",
+  "description": "Gateway emulujący API OpenAI z wykorzystaniem darmowych modeli OpenRouter i Google Gemini",
   "main": "openai-gateway.js",
   "scripts": {
     "start": "node openai-gateway.js",
@@ -15,7 +15,13 @@
     "api",
     "proxy",
     "mistral",
-    "llm"
+    "llm",
+    "gemini",
+    "deepseek",
+    "qwen",
+    "llama",
+    "gemma",
+    "free-ai-models"
   ],
   "author": "",
   "license": "MIT",
