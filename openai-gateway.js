@@ -7,7 +7,18 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const dotenv = require('dotenv');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { createOpencodeClient } = require('@opencode-ai/sdk');
+
+// Dynamic import for ES module
+let createOpencodeClient;
+(async () => {
+  try {
+    const opencodeModule = await import('@opencode-ai/sdk');
+    createOpencodeClient = opencodeModule.createOpencodeClient;
+  } catch (err) {
+    console.warn('[INIT] Warning: OpenCode SDK import failed (optional provider). Error:', err.message);
+    createOpencodeClient = null;
+  }
+})();
 
 // Załadowanie zmiennych środowiskowych
 dotenv.config();
@@ -286,6 +297,10 @@ let opencodeClient = null;
 const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL || 'http://localhost:4096';
 const initializeOpencodeClient = async () => {
   try {
+    if (!createOpencodeClient) {
+      logger.warn('INIT', 'OpenCode SDK not available, skipping client initialization');
+      return;
+    }
     opencodeClient = createOpencodeClient({ baseUrl: OPENCODE_BASE_URL });
     logger.info('INIT', 'OpenCode client initialized', { baseUrl: OPENCODE_BASE_URL });
   } catch (error) {
