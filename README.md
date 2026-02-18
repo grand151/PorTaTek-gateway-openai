@@ -1,32 +1,91 @@
 # Emulator API OpenAI z użyciem darmowych modeli
 
-Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowując zapytania do darmowych modeli dostępnych przez OpenRouter, głównie Mistral Small.
+Ten projekt to gateway (proxy), który emuluje interfejs API OpenAI, przekierowując zapytania do darmowych modeli dostępnych przez OpenRouter oraz Google Gemini API.
 
 ## Funkcje
 
 - 🔄 Pełna emulacja API OpenAI (drop-in replacement)
-- 🆓 Wykorzystanie darmowych modeli OpenRouter
+- 🆓 Wykorzystanie darmowych modeli z OpenRouter i Google Gemini
 - 🗺️ Automatyczne mapowanie modeli GPT na darmowe alternatywy
 - 🔄 Automatyczny retry w przypadku błędów
 - 🔀 Fallback do alternatywnych modeli w przypadku awarii
 - 💾 Cachowanie odpowiedzi dla oszczędności czasu i zasobów
 - 🖼️ Obsługa modeli multimodalnych (tekst + obrazy)
+- 🤖 Wsparcie dla wielu providerów (OpenRouter, Google Gemini)
+
+## Dostępne modele
+
+### Modele z OpenRouter (darmowe)
+
+#### DeepSeek (najnowsze, wydajne)
+- **deepseek-r1-0528** - 164K context, świetny dla reasoning i dialogu
+
+#### Qwen (multimodalne, kodowanie)
+- **qwen3-235b** - 262K context, zaawansowane reasoning
+- **qwen3-next-80b** - 262K context, szybki i wszechstronny
+- **qwen3-coder** - specjalizowany w kodowaniu
+- **qwen3-vl-235b-thinking** - model wizyjny z thinking
+- **qwen3-vl-30b-thinking** - model wizyjny, lżejszy
+
+#### Mistral AI
+- **mistral-small-3.1-24b** - 128K context, vision, narzędzia
+- **mistral-small-2501** - nowa wersja, fallback
+- **mistral-embed** - embeddings
+
+#### Meta Llama
+- **llama-3.3-70b** - duży model, wysokiej jakości
+- **llama-3.2-3b** - szybki, lekki model
+
+#### Google Gemma
+- **gemma-2-9b** - open source, uniwersalny
+- **gemma-2-2b** - najmniejszy, najszybszy
+
+### Modele Google Gemini (bezpośrednie API)
+
+- **gemini-3-flash** - najnowszy, ultraszybki
+- **gemini-3-pro** - najlepszy reasoning i analiza
+- **gemini-2.0-flash** - do 1M tokenów context
+- **gemini-1.5-flash** - szybki, 128K context
+- **gemini-1.5-pro** - zaawansowany, 1M context
 
 ## Mapowanie modeli
 
-| Model OpenAI | Model OpenRouter |
-|--------------|------------------|
-| gpt-3.5-turbo | mistralai/mistral-small-3.1-24b-instruct:free |
-| gpt-4 | mistralai/mistral-small-3.1-24b-instruct:free |
-| gpt-4-vision | qwen/qwen2.5-vl-32b-instruct:free |
-| text-embedding-ada-002 | mistralai/mistral-embed:free |
-| text-davinci-003 | mistralai/mistral-embed:free |
+| Model OpenAI | Model docelowy | Provider |
+|--------------|----------------|----------|
+| gpt-3.5-turbo | DeepSeek R1 | OpenRouter |
+| gpt-4 | DeepSeek R1 | OpenRouter |
+| gpt-4o | Qwen3 235B | OpenRouter |
+| gpt-4o-mini | Qwen3 Next 80B | OpenRouter |
+| gpt-4-vision | Qwen3 VL 235B | OpenRouter |
+| gpt-4-code | Qwen3 Coder | OpenRouter |
+| gemini-3-flash | Gemini 3 Flash | Google Gemini |
+| gemini-1.5-pro | Gemini 1.5 Pro | Google Gemini |
+| text-embedding-ada-002 | Mistral Embed | OpenRouter |
 
 
 ## Wymagania
 
 - Node.js 14+
 - npm lub yarn
+- Klucz API OpenRouter (opcjonalny, jeśli używasz Gemini)
+- Klucz API Google Gemini (opcjonalny, jeśli używasz OpenRouter)
+
+**Uwaga:** Wymagany jest przynajmniej jeden klucz API (OpenRouter lub Gemini).
+
+## Uzyskanie kluczy API
+
+### OpenRouter API Key (darmowy)
+1. Zarejestruj się na [https://openrouter.ai](https://openrouter.ai)
+2. Przejdź do ustawień konta
+3. Wygeneruj nowy klucz API
+4. Darmowe modele mają limity: ~20 req/min, ~200 req/dzień
+
+### Google Gemini API Key (darmowy)
+1. Odwiedź [https://aistudio.google.com](https://aistudio.google.com)
+2. Zaloguj się kontem Google
+3. Kliknij "Get API Key" lub "Create API key"
+4. Skopiuj i bezpiecznie zapisz klucz
+5. Darmowy tier: ~15 req/min (Flash), ~2-5 req/min (Pro)
 
 ## Instalacja
 
@@ -57,17 +116,43 @@ Gateway będzie dostępny pod adresem `http://localhost:8787`.
 
 ## Użycie
 
-Możesz używać tego gateway dokładnie tak samo jak normalnego API OpenAI:
+Możesz używać tego gateway dokładnie tak samo jak normalnego API OpenAI. Gateway automatycznie wykrywa i kieruje żądania do odpowiedniego providera.
 
-### Curl
+### Przykład z modelami OpenRouter
 
 ```bash
 curl -X POST "http://localhost:8787/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-3.5-turbo",
+    "model": "gpt-4",
     "messages": [
-        {"role": "user", "content": "Twoje pytanie"}
+        {"role": "user", "content": "Wyjaśnij jak działa AI"}
+    ]
+  }'
+```
+
+### Przykład z modelami Gemini
+
+```bash
+curl -X POST "http://localhost:8787/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3-flash",
+    "messages": [
+        {"role": "user", "content": "Co to jest machine learning?"}
+    ]
+  }'
+```
+
+### Przykład z modelami kodowania
+
+```bash
+curl -X POST "http://localhost:8787/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4-code",
+    "messages": [
+        {"role": "user", "content": "Napisz funkcję sortującą w Python"}
     ]
   }'
 ```
@@ -143,16 +228,30 @@ docker-compose up -d
 | Zmienna | Opis | Domyślna wartość |
 |---------|------|------------------|
 | PORT | Port na którym działa serwer | 8787 |
-| OPENROUTER_API_KEY | Klucz API do OpenRouter | (wymagany) |
+| OPENROUTER_API_KEY | Klucz API do OpenRouter | (opcjonalny*) |
+| GEMINI_API_KEY | Klucz API do Google Gemini | (opcjonalny*) |
 | CACHE_TTL | Czas życia cache w milisekundach | 3600000 (1h) |
 | MAX_RETRIES | Maksymalna liczba ponownych prób | 3 |
 | RETRY_DELAY | Opóźnienie między próbami (ms) | 1000 |
 
+*Wymagany przynajmniej jeden z kluczy API (OPENROUTER_API_KEY lub GEMINI_API_KEY)
+
 ## Limity i ograniczenia
 
+### OpenRouter
 - Darmowe modele mogą być wolniejsze niż oryginalne modele OpenAI
+- Limity: ~20 zapytań/minutę, ~200 zapytań/dzień
+- Dostępność zależy od OpenRouter
+
+### Google Gemini
+- Gemini Flash: ~15 zapytań/minutę
+- Gemini Pro: ~2-5 zapytań/minutę
+- Streaming nie jest jeszcze wspierany dla modeli Gemini
 - Niektóre zaawansowane funkcje OpenAI mogą nie działać
-- Dostępność zależy od usług OpenRouter
+
+### Ogólne
+- Gateway automatycznie wybiera fallback gdy główny model jest niedostępny
+- Cache pomaga zaoszczędzić limity dla identycznych zapytań
 
 ## Rozwiązywanie problemów
 
