@@ -6,7 +6,13 @@ const axios = require('axios');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const dotenv = require('dotenv');
+const cookieParser = require('cookie-parser');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+// OAuth & Authentication
+const GitHubAuthManager = require('./auth.js');
+const UserManager = require('./users.js');
+const { createAuthMiddleware, optionalAuthMiddleware } = require('./middleware.js');
 
 // Dynamic import for ES module
 let createOpencodeClient;
@@ -49,6 +55,16 @@ const logger = {
     console.error(`[${timestamp}] [${module}] ❌ ${message}${errorStr}${dataStr}`);
   }
 };
+
+// OAuth & Authentication Initialization
+const githubAuth = new GitHubAuthManager({
+  clientId: process.env.GITHUB_CLIENT_ID,
+  clientSecret: process.env.GITHUB_CLIENT_SECRET,
+  callbackURL: process.env.GITHUB_CALLBACK_URL || 'http://localhost:3000/auth/github/callback',
+  jwtSecret: process.env.JWT_SECRET || 'default-secret-key'
+});
+const userManager = new UserManager('./users-db.json');
+logger.info('AUTH', 'GitHub OAuth and User Manager initialized');
 
 // Rate Limiting System (Token Bucket Algorithm)
 const RATE_LIMIT_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW || '60000', 10); // 1 minute
@@ -441,6 +457,7 @@ const CACHE_TTL = parseInt(process.env.CACHE_TTL || '3600000', 10);
 // Konfiguracja middleware
 app.use(cors());
 app.use(bodyParser.json());
+app.use(cookieParser());
 
 // Rate Limiting Middleware
 app.use((req, res, next) => {
@@ -1613,6 +1630,54 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
+// OAuth Routes
+app.get('/login', (req, res) => {
+  const clientId = process.env.GITHUB_CLIENT_ID;
+  if (!clientId) {
+    return res.status(500).json({ error: 'GitHub OAuth not configured' });
+  }
+  const redirectUri = encodeURIComponent(process.env.GITHUB_CALLBACK_URL || 'http://localhost:3000/auth/github/callback');
+  const scope = encodeURIComponent('user:email read:user');
+  const authUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=${scope}`;
+  res.redirect(authUrl);
+});
+
+app.get('/auth/github/callback', async (req, res) => {
+  const { code, error, error_description } = req.query;
+  
+  if (error) {
+    logger.warn('OAuth', 'GitHub OAuth error', { error, error_description });
+    return res.status(400).json({ error: error_description || 'OAuth failed' });
+  }
+  
+  if (!code) {
+    return res.status(400).json({ error: 'Missing authorization code' });
+  }
+  
+  try {
+    const { accessToken, user } = await githubAuth.handleCallback(code);
+    const dbUser = await userManager.createOrUpdateUser(user);
+    const jwtToken = githubAuth.generateJWT({ userId: dbUser.id, login: dbUser.login });
+    
+    res.cookie('auth_token', jwtToken, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 });
+    
+    logger.info('OAuth', 'User authenticated successfully', { userId: dbUser.id, login: dbUser.login });
+    res.redirect(`/?auth_token=${jwtToken}&user=${dbUser.login}`);
+  } catch (error) {
+    logger.error('OAuth', 'GitHub callback error', error);
+    res.status(500).json({ error: 'Authentication failed', details: error.message });
+  }
+});
+
+app.get('/auth/me', createAuthMiddleware(githubAuth, userManager), (req, res) => {
+  res.json({ user: req.user });
+});
+
+app.post('/auth/logout', (req, res) => {
+  res.clearCookie('auth_token');
+  res.json({ message: 'Logged out successfully' });
+});
+
 // Endpointy testowe (health check)
 app.get('/health', async (req, res) => {
   const health = {
@@ -1770,7 +1835,10 @@ app.post('/v1/emulate', (req, res) => {
 });
 
 // Endpoint panelu konfiguracyjnego (HTML)
-app.get('/admin', (req, res) => {
+app.get('/admin', createAuthMiddleware(githubAuth, userManager), (req, res) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Admin access required' });
+  }
   res.send(getConfigPanelHTML());
 });
 
@@ -1811,7 +1879,10 @@ app.get('/config', (req, res) => {
 });
 
 // Endpoint do aktualizacji konfiguracji modeli (tylko w pamięci, nie zapisuje do pliku)
-app.post('/config/models', (req, res) => {
+app.post('/config/models', createAuthMiddleware(githubAuth, userManager), (req, res) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Admin access required' });
+  }
   try {
     const { openaiModel, targetModel, provider } = req.body;
     
@@ -1846,7 +1917,10 @@ app.post('/config/models', (req, res) => {
 });
 
 // Endpoint do czyszczenia cache'a
-app.post('/config/clear-cache', (req, res) => {
+app.post('/config/clear-cache', createAuthMiddleware(githubAuth, userManager), (req, res) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Admin access required' });
+  }
   const cacheSize = responseCache.size;
   responseCache.clear();
   res.json({
@@ -1920,7 +1994,10 @@ app.delete('/session/:sessionId', (req, res) => {
 });
 
 // Endpoint do dodawania/aktualizacji kluczy API dla providerów
-app.post('/config/providers', (req, res) => {
+app.post('/config/providers', createAuthMiddleware(githubAuth, userManager), (req, res) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Admin access required' });
+  }
   try {
     const { provider, apiKey, action } = req.body;
     
@@ -1979,7 +2056,10 @@ app.post('/config/providers', (req, res) => {
 });
 
 // Endpoint do dodawania niestandardowego providera
-app.post('/config/providers/custom', (req, res) => {
+app.post('/config/providers/custom', createAuthMiddleware(githubAuth, userManager), (req, res) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Admin access required' });
+  }
   try {
     const { name, displayName, endpoint, apiKeys, apiKeyHeader, modelPrefix } = req.body;
     
@@ -2048,7 +2128,10 @@ app.delete('/config/providers/custom/:name', (req, res) => {
 });
 
 // Endpoint do zarządzania fallbackami
-app.post('/config/fallbacks', (req, res) => {
+app.post('/config/fallbacks', createAuthMiddleware(githubAuth, userManager), (req, res) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ error: 'Forbidden: Admin access required' });
+  }
   try {
     const { primaryModel, fallbackModel, action } = req.body;
     
