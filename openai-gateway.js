@@ -12,6 +12,33 @@ const { createOpencodeClient } = require('@opencode-ai/sdk');
 // Załadowanie zmiennych środowiskowych
 dotenv.config();
 
+// Logging Utility
+const DEBUG = process.env.DEBUG === 'true';
+const logger = {
+  info: (module, message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    const dataStr = Object.keys(data).length ? ` | ${JSON.stringify(data)}` : '';
+    console.log(`[${timestamp}] [${module}] ℹ️  ${message}${dataStr}`);
+  },
+  debug: (module, message, data = {}) => {
+    if (!DEBUG) return;
+    const timestamp = new Date().toISOString();
+    const dataStr = Object.keys(data).length ? ` | ${JSON.stringify(data)}` : '';
+    console.log(`[${timestamp}] [${module}] 🔍 ${message}${dataStr}`);
+  },
+  warn: (module, message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    const dataStr = Object.keys(data).length ? ` | ${JSON.stringify(data)}` : '';
+    console.warn(`[${timestamp}] [${module}] ⚠️  ${message}${dataStr}`);
+  },
+  error: (module, message, error = null, data = {}) => {
+    const timestamp = new Date().toISOString();
+    const errorStr = error ? ` | Error: ${error.message}` : '';
+    const dataStr = Object.keys(data).length ? ` | ${JSON.stringify(data)}` : '';
+    console.error(`[${timestamp}] [${module}] ❌ ${message}${errorStr}${dataStr}`);
+  }
+};
+
 // Walidacja wymaganych zmiennych środowiskowych (przynajmniej jeden provider musi być skonfigurowany)
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -25,11 +52,11 @@ if (!OPENROUTER_API_KEY && !GEMINI_API_KEY) {
 let geminiClient = null;
 if (GEMINI_API_KEY) {
   geminiClient = new GoogleGenerativeAI(GEMINI_API_KEY);
-  console.log('Google Gemini API client initialized');
+  logger.info('INIT', 'Google Gemini API client initialized');
 }
 
 if (OPENROUTER_API_KEY) {
-  console.log('OpenRouter API client initialized');
+  logger.info('INIT', 'OpenRouter API client initialized');
 }
 
 let opencodeClient = null;
@@ -37,15 +64,135 @@ const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL || 'http://localhost:409
 const initializeOpencodeClient = async () => {
   try {
     opencodeClient = createOpencodeClient({ baseUrl: OPENCODE_BASE_URL });
-    console.log(`OpenCode client initialized (baseUrl: ${OPENCODE_BASE_URL})`);
+    logger.info('INIT', 'OpenCode client initialized', { baseUrl: OPENCODE_BASE_URL });
   } catch (error) {
-    console.warn('OpenCode client initialization failed:', error.message);
+    logger.warn('INIT', 'OpenCode client initialization failed', error, { baseUrl: OPENCODE_BASE_URL });
   }
 };
 
 initializeOpencodeClient().catch(error => {
-  console.warn('Failed to initialize OpenCode client on startup:', error.message);
+  logger.warn('INIT', 'Failed to initialize OpenCode client on startup', error);
 });
+
+// OpenCode Session Management System
+class SessionManager {
+  constructor(ttl = 3600000) {
+    this.sessions = new Map();
+    this.messageHistory = new Map();
+    this.sessionTTL = ttl;
+  }
+
+  generateSessionId() {
+    return `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  async createSession() {
+    const sessionId = this.generateSessionId();
+    const timestamp = Date.now();
+    
+    this.sessions.set(sessionId, {
+      id: sessionId,
+      created: timestamp,
+      lastActivity: timestamp,
+      status: 'active'
+    });
+
+    this.messageHistory.set(sessionId, []);
+    logger.debug('SESSION', 'Session created', { sessionId, createdAt: new Date(timestamp).toISOString() });
+    
+    return sessionId;
+  }
+
+  getSession(sessionId) {
+    return this.sessions.get(sessionId);
+  }
+
+  updateSessionActivity(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.lastActivity = Date.now();
+    }
+  }
+
+  getMessageHistory(sessionId) {
+    const history = this.messageHistory.get(sessionId) || [];
+    logger.debug('SESSION', 'Message history retrieved', { sessionId, count: history.length });
+    return history;
+  }
+
+  addMessage(sessionId, role, content) {
+    if (!this.messageHistory.has(sessionId)) {
+      this.messageHistory.set(sessionId, []);
+    }
+    
+    const history = this.messageHistory.get(sessionId);
+    history.push({
+      role,
+      content,
+      timestamp: Date.now()
+    });
+
+    logger.debug('SESSION', 'Message added to history', { sessionId, role, contentLength: content.length, totalMessages: history.length });
+    this.updateSessionActivity(sessionId);
+    return history;
+  }
+
+  closeSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.status = 'closed';
+      logger.debug('SESSION', 'Session closed', { sessionId });
+    }
+  }
+
+  deleteSession(sessionId) {
+    this.sessions.delete(sessionId);
+    this.messageHistory.delete(sessionId);
+    logger.debug('SESSION', 'Session deleted', { sessionId });
+  }
+
+  cleanupExpiredSessions() {
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const [sessionId, session] of this.sessions.entries()) {
+      if (now - session.lastActivity > this.sessionTTL) {
+        this.deleteSession(sessionId);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      logger.info('SESSION', 'Expired sessions cleaned up', { count: cleaned, totalActive: this.sessions.size });
+    }
+    
+    return cleaned;
+  }
+
+  getAllSessions() {
+    return Array.from(this.sessions.values()).map(session => ({
+      ...session,
+      messagesCount: (this.messageHistory.get(session.id) || []).length
+    }));
+  }
+
+  getSessionStats() {
+    const sessions = this.getAllSessions();
+    return {
+      totalSessions: sessions.length,
+      activeSessions: sessions.filter(s => s.status === 'active').length,
+      closedSessions: sessions.filter(s => s.status === 'closed').length,
+      totalMessages: Array.from(this.messageHistory.values()).reduce((sum, msgs) => sum + msgs.length, 0)
+    };
+  }
+}
+
+const sessionManager = new SessionManager(parseInt(process.env.SESSION_TTL || '3600000', 10));
+
+// Cleanup expired sessions every 5 minutes
+setInterval(() => {
+  sessionManager.cleanupExpiredSessions();
+}, 300000);
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -357,10 +504,14 @@ async function fetchOpencodeWithRetry(model, messages, options = {}, retries = 0
   }
 
   try {
+    const sessionId = options.sessionId || await sessionManager.createSession();
     const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+    
     if (!lastUserMessage) {
       throw new Error('No user message found');
     }
+
+    sessionManager.addMessage(sessionId, 'user', lastUserMessage.content);
 
     const requestBody = {
       model: {
@@ -376,24 +527,28 @@ async function fetchOpencodeWithRetry(model, messages, options = {}, retries = 0
     };
 
     const response = await opencodeClient.session.prompt({
-      path: { id: 'default-session' },
+      path: { id: sessionId },
       body: requestBody
     });
 
+    const assistantContent = response.content?.text || '';
+    sessionManager.addMessage(sessionId, 'assistant', assistantContent);
+
     const usage = {
       prompt_tokens: messages.reduce((sum, m) => sum + (m.content?.length || 0) / 4, 0),
-      completion_tokens: (response.content?.text?.length || 0) / 4,
+      completion_tokens: (assistantContent.length || 0) / 4,
       total_tokens: 0
     };
 
     return {
       id: `opencode-${Date.now()}`,
+      sessionId: sessionId,
       choices: [
         {
           index: 0,
           message: {
             role: 'assistant',
-            content: response.content?.text || ''
+            content: assistantContent
           },
           finish_reason: 'stop'
         }
@@ -465,6 +620,66 @@ async function fetchOpenRouterWithRetry(url, data, headers, retries = 0, modelFa
   }
 }
 
+async function* streamOpencodeResponse(model, messages, options = {}) {
+  try {
+    const sessionId = options.sessionId || await sessionManager.createSession();
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+    
+    if (!lastUserMessage) {
+      throw new Error('No user message found');
+    }
+
+    sessionManager.addMessage(sessionId, 'user', lastUserMessage.content);
+
+    const requestBody = {
+      model: {
+        providerID: model.split('/')[0] || 'opencode',
+        modelID: model
+      },
+      parts: [{
+        type: 'text',
+        text: lastUserMessage.content
+      }]
+    };
+
+    const response = await opencodeClient.session.prompt({
+      path: { id: sessionId },
+      body: requestBody
+    });
+
+    const assistantContent = response.content?.text || '';
+    sessionManager.addMessage(sessionId, 'assistant', assistantContent);
+
+    yield {
+      id: `opencode-${Date.now()}`,
+      object: 'text_completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      choices: [{
+        index: 0,
+        delta: {
+          role: 'assistant',
+          content: assistantContent
+        },
+        finish_reason: null
+      }]
+    };
+
+    yield {
+      id: `opencode-${Date.now()}`,
+      object: 'text_completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      choices: [{
+        index: 0,
+        delta: {},
+        finish_reason: 'stop'
+      }]
+    };
+  } catch (error) {
+    console.error('OpenCode streaming error:', error.message);
+    throw error;
+  }
+}
+
 // Middleware do logowania requestów
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
@@ -482,12 +697,12 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Określenie providera
     const provider = MODEL_PROVIDER[model] || 'openrouter';
     
-    console.log(`Request for model: ${requestedModel} -> ${model} (provider: ${provider})`);
+    logger.info('API', 'Chat completion request received', { requestedModel, model, provider, stream, messageCount: messages.length });
     
     // Sprawdzenie czy odpowiedź jest w cache'u
     const cacheKey = generateCacheKey(model, messages, otherOptions);
     if (responseCache.has(cacheKey) && !stream) {
-      console.log('Cache hit - returning cached response');
+      logger.debug('API', 'Cache hit - returning cached response', { cacheKey });
       return res.json(responseCache.get(cacheKey));
     }
     
@@ -515,26 +730,25 @@ app.post('/v1/chat/completions', async (req, res) => {
         });
       }
       
-      try {
-        const geminiData = await fetchGeminiWithRetry(model, messages, otherOptions);
-        
-        const openAIResponse = {
-          id: geminiData.id,
-          object: 'chat.completion',
-          created: Math.floor(Date.now() / 1000),
-          model: requestedModel,
-          choices: geminiData.choices,
-          usage: geminiData.usage
-        };
-        
-        // Dodanie do cache'a
-        responseCache.set(cacheKey, openAIResponse);
-        setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
-        
-        res.json(openAIResponse);
-      } catch (error) {
-        handleError(error, res);
-      }
+       try {
+         const geminiData = await fetchGeminiWithRetry(model, messages, otherOptions);
+         
+         const openAIResponse = {
+           id: geminiData.id,
+           object: 'chat.completion',
+           created: Math.floor(Date.now() / 1000),
+           model: requestedModel,
+           choices: geminiData.choices,
+           usage: geminiData.usage
+         };
+         
+         responseCache.set(cacheKey, openAIResponse);
+         setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
+         
+         res.json(openAIResponse);
+       } catch (error) {
+         handleError(error, res, { provider: 'gemini' });
+       }
     } else if (provider === 'opencode') {
       if (!opencodeClient) {
         return res.status(503).json({
@@ -547,35 +761,46 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
 
       if (stream) {
-        return res.status(501).json({
-          error: {
-            message: 'Streaming is not yet supported for OpenCode models',
-            type: 'not_implemented',
-            code: 'streaming_not_supported'
+        try {
+          res.setHeader('Content-Type', 'text/event-stream');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Connection', 'keep-alive');
+
+          const generator = streamOpencodeResponse(model, messages, otherOptions);
+          
+          for await (const chunk of generator) {
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
           }
-        });
-      }
+          
+          res.write('data: [DONE]\n\n');
+          res.end();
+         } catch (error) {
+           handleStreamingError(error, res, { provider: 'opencode' });
+           res.end();
+         }
+      } else {
+        try {
+          const opencodeData = await fetchOpencodeWithRetry(model, messages, otherOptions);
 
-      try {
-        const opencodeData = await fetchOpencodeWithRetry(model, messages, otherOptions);
+          const openAIResponse = {
+            id: opencodeData.id,
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: requestedModel,
+            choices: opencodeData.choices,
+            usage: opencodeData.usage,
+            sessionId: opencodeData.sessionId
+          };
 
-        const openAIResponse = {
-          id: opencodeData.id,
-          object: 'chat.completion',
-          created: Math.floor(Date.now() / 1000),
-          model: requestedModel,
-          choices: opencodeData.choices,
-          usage: opencodeData.usage
-        };
+          responseCache.set(cacheKey, openAIResponse);
+          setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
 
-        responseCache.set(cacheKey, openAIResponse);
-        setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
-
-        res.json(openAIResponse);
-      } catch (error) {
-        handleError(error, res);
-      }
-    } else {
+           res.json(openAIResponse);
+         } catch (error) {
+           handleError(error, res, { provider: 'opencode' });
+         }
+       }
+     } else {
       // Obsługa przez OpenRouter (domyślna)
       const openrouterKey = getProviderApiKey('openrouter');
       if (!openrouterKey) {
@@ -622,14 +847,11 @@ app.post('/v1/chat/completions', async (req, res) => {
           
           // Przekazanie streamu
           openRouterResponse.data.pipe(res);
-        } catch (error) {
-          console.error('Stream error:', error.message);
-          // W przypadku błędu streamu, kończymy strumień z komunikatem błędu
-          res.write(`data: ${JSON.stringify({ error: { message: 'Stream error occurred' } })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          res.end();
-        }
-      } else {
+         } catch (error) {
+           handleStreamingError(error, res, { provider: 'openrouter' });
+           res.end();
+         }
+       } else {
         // Standardowe zapytanie bez streamu
         try {
           // Użycie funkcji z retry i fallbackiem
@@ -653,15 +875,15 @@ app.post('/v1/chat/completions', async (req, res) => {
           responseCache.set(cacheKey, openAIResponse);
           setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
           
-          res.json(openAIResponse);
-        } catch (error) {
-          handleError(error, res);
-        }
-      }
-    }
-  } catch (error) {
-    handleError(error, res);
-  }
+           res.json(openAIResponse);
+         } catch (error) {
+           handleError(error, res, { provider: 'openrouter' });
+         }
+       }
+     }
+   } catch (error) {
+     handleError(error, res, { provider });
+   }
 });
 
 // Endpoint dla /v1/embeddings
@@ -719,29 +941,219 @@ app.post('/v1/embeddings', async (req, res) => {
   }
 });
 
-// Funkcja do obsługi błędów
-function handleError(error, res) {
-  console.error('Error:', error.message);
-  
-  // Próba odczytania błędu z OpenRouter
-  let errorMessage = 'Internal server error';
-  let statusCode = 500;
-  
-  if (error.response) {
-    errorMessage = error.response.data.error?.message || errorMessage;
-    statusCode = error.response.status;
+// Enhanced Error Handling System
+class OpenCodeError extends Error {
+  constructor(message, code, statusCode = 500, details = {}) {
+    super(message);
+    this.name = 'OpenCodeError';
+    this.code = code;
+    this.statusCode = statusCode;
+    this.details = details;
+    this.timestamp = new Date().toISOString();
   }
-  
-  // Zwracanie błędu w formacie zgodnym z OpenAI
-  res.status(statusCode).json({
-    error: {
-      message: errorMessage,
-      type: 'api_error',
-      code: 'internal_error',
-      param: null,
-      status: statusCode
+}
+
+// Error classifier function
+function classifyError(error) {
+  // Check if already classified
+  if (error instanceof OpenCodeError) {
+    return {
+      code: error.code,
+      statusCode: error.statusCode,
+      type: 'opencode_error',
+      message: error.message,
+      details: error.details
+    };
+  }
+
+  // Check for HTTP response errors
+  if (error.response) {
+    const status = error.response.status;
+    const message = error.response.data?.error?.message || error.message;
+    
+    if (status === 401 || status === 403) {
+      return {
+        code: 'authentication_error',
+        statusCode: status,
+        type: 'auth_failure',
+        message: 'Authentication failed. Invalid or expired API key.',
+        details: { originalMessage: message }
+      };
     }
+    
+    if (status === 429) {
+      return {
+        code: 'rate_limit_error',
+        statusCode: 429,
+        type: 'rate_limit',
+        message: 'Rate limit exceeded. Please retry after some time.',
+        details: { originalMessage: message }
+      };
+    }
+    
+    if (status >= 500) {
+      return {
+        code: 'provider_error',
+        statusCode: status,
+        type: 'server_error',
+        message: 'Provider service temporarily unavailable.',
+        details: { originalMessage: message }
+      };
+    }
+    
+    if (status === 400) {
+      return {
+        code: 'invalid_request',
+        statusCode: 400,
+        type: 'validation_error',
+        message: 'Invalid request parameters.',
+        details: { originalMessage: message }
+      };
+    }
+
+    return {
+      code: 'api_error',
+      statusCode: status,
+      type: 'http_error',
+      message: message || 'API request failed',
+      details: {}
+    };
+  }
+
+  // Check for timeout errors
+  if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+    return {
+      code: 'timeout_error',
+      statusCode: 504,
+      type: 'network_error',
+      message: 'Request timeout. Provider took too long to respond.',
+      details: {}
+    };
+  }
+
+  // Check for connection errors
+  if (error.code === 'ECONNREFUSED' || error.message?.includes('ECONNREFUSED')) {
+    return {
+      code: 'connection_error',
+      statusCode: 503,
+      type: 'network_error',
+      message: 'Cannot connect to provider. Service may be offline.',
+      details: {}
+    };
+  }
+
+  // Check for OpenCode-specific errors
+  if (error.message?.includes('OpenCode client not initialized')) {
+    return {
+      code: 'opencode_not_configured',
+      statusCode: 503,
+      type: 'configuration_error',
+      message: 'OpenCode provider is not configured. Check OPENCODE_BASE_URL.',
+      details: {}
+    };
+  }
+
+  // Check for session errors
+  if (error.message?.includes('No user message found')) {
+    return {
+      code: 'invalid_request',
+      statusCode: 400,
+      type: 'validation_error',
+      message: 'Request must contain at least one user message.',
+      details: {}
+    };
+  }
+
+  // Default error classification
+  return {
+    code: 'unknown_error',
+    statusCode: 500,
+    type: 'internal_error',
+    message: error.message || 'An unexpected error occurred.',
+    details: {}
+  };
+}
+
+// Enhanced error handler
+function handleError(error, res, options = {}) {
+  const { provider = 'unknown', sessionId = null } = options;
+  
+  // Classify the error
+  const errorInfo = classifyError(error);
+  
+  // Log detailed error information
+  console.error(`[${errorInfo.type.toUpperCase()}] ${errorInfo.code}`, {
+    message: errorInfo.message,
+    provider,
+    sessionId,
+    timestamp: new Date().toISOString(),
+    originalError: error.message,
+    details: errorInfo.details
   });
+
+  // Send structured error response
+  const responseBody = {
+    error: {
+      message: errorInfo.message,
+      type: errorInfo.type,
+      code: errorInfo.code,
+      param: null,
+      status: errorInfo.statusCode
+    }
+  };
+
+  // Add debugging context for non-production environments
+  if (process.env.NODE_ENV !== 'production') {
+    responseBody.error.debug = {
+      originalError: error.message,
+      provider,
+      sessionId,
+      timestamp: errorInfo.timestamp,
+      details: errorInfo.details
+    };
+  }
+
+  res.status(errorInfo.statusCode).json(responseBody);
+}
+
+// Streaming error handler for SSE
+function handleStreamingError(error, res, options = {}) {
+  const { provider = 'unknown', sessionId = null } = options;
+  
+  // Classify the error
+  const errorInfo = classifyError(error);
+  
+  // Log detailed error information
+  console.error(`[STREAMING_ERROR] ${errorInfo.code}`, {
+    message: errorInfo.message,
+    provider,
+    sessionId,
+    timestamp: new Date().toISOString(),
+    originalError: error.message
+  });
+
+  // Create error chunk in SSE format
+  const errorChunk = {
+    error: {
+      message: errorInfo.message,
+      type: errorInfo.type,
+      code: errorInfo.code,
+      status: errorInfo.statusCode
+    }
+  };
+
+  // Send error as SSE chunk if headers not yet sent
+  if (!res.headersSent) {
+    res.status(errorInfo.statusCode);
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+  }
+
+  if (res.writable) {
+    res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
+    res.write(`data: [DONE]\n\n`);
+  }
 }
 
 // Endpoint dla /v1/models - zwraca listę dostępnych modeli
@@ -760,18 +1172,44 @@ app.get('/v1/models', (req, res) => {
 });
 
 // Endpointy testowe (health check)
-app.get('/health', (req, res) => {
-  res.json({ 
+app.get('/health', async (req, res) => {
+  const health = {
     status: 'ok', 
     message: 'Gateway is running',
     version: '1.0.0',
+    timestamp: new Date().toISOString(),
     config: {
       port: PORT,
       max_retries: MAX_RETRIES,
       retry_delay: RETRY_DELAY,
       cache_ttl: CACHE_TTL
+    },
+    providers: {
+      openrouter: !!process.env.OPENROUTER_API_KEY,
+      gemini: !!process.env.GEMINI_API_KEY,
+      opencode: !!opencodeClient
+    },
+    sessions: sessionManager.getSessionStats()
+  };
+
+  if (opencodeClient) {
+    try {
+      const config = await opencodeClient.config.providers();
+      health.opencode = {
+        connected: true,
+        providers: config?.providers?.length || 0,
+        default: config?.default ? Object.keys(config.default).length : 0
+      };
+    } catch (error) {
+      health.opencode = {
+        connected: false,
+        error: error.message
+      };
+      health.status = 'degraded';
     }
-  });
+  }
+
+  res.json(health);
 });
 
 app.get('/', (req, res) => {
@@ -995,6 +1433,42 @@ app.get('/config/providers', (req, res) => {
       }))
     }
   });
+});
+
+// Session status endpoint
+app.get('/session/status', (req, res) => {
+  res.json({
+    stats: sessionManager.getSessionStats(),
+    sessions: sessionManager.getAllSessions()
+  });
+});
+
+// Get specific session details
+app.get('/session/:sessionId', (req, res) => {
+  const { sessionId } = req.params;
+  const session = sessionManager.getSession(sessionId);
+  
+  if (!session) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  res.json({
+    session,
+    messages: sessionManager.getMessageHistory(sessionId)
+  });
+});
+
+// Close/delete session
+app.delete('/session/:sessionId', (req, res) => {
+  const { sessionId } = req.params;
+  const session = sessionManager.getSession(sessionId);
+  
+  if (!session) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  sessionManager.deleteSession(sessionId);
+  res.json({ success: true, message: `Session ${sessionId} deleted` });
 });
 
 // Endpoint do dodawania/aktualizacji kluczy API dla providerów
