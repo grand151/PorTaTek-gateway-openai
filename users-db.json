@@ -1,0 +1,16 @@
+{
+  "grand151": {
+    "id": "grand151",
+    "login": "grand151",
+    "name": "Admin User",
+    "email": "admin@example.com",
+    "isAdmin": true,
+    "permissions": [
+      "read",
+      "write",
+      "admin"
+    ],
+    "createdAt": "2026-02-18T22:00:00.000Z",
+    "updatedAt": "2026-02-18T22:00:00.000Z"
+  }
+}
