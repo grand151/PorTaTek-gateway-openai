@@ -193,7 +193,7 @@ async function fetchGeminiWithRetry(model, messages, options = {}, retries = 0) 
     const generativeModel = geminiClient.getGenerativeModel(modelConfig);
     
     // Dla kontekstu konwersacji, użyj chat session
-    if (history.length > 1) {
+    if (history.length > 0) {
       const chat = generativeModel.startChat({
         history: history.slice(0, -1), // Wszystkie wiadomości oprócz ostatniej
         generationConfig: {
@@ -205,6 +205,7 @@ async function fetchGeminiWithRetry(model, messages, options = {}, retries = 0) 
       
       const result = await chat.sendMessage(lastUserMessage.content);
       const response = result.response;
+      const usage = response.usageMetadata || {};
       
       return {
         id: `gemini-${Date.now()}`,
@@ -217,9 +218,9 @@ async function fetchGeminiWithRetry(model, messages, options = {}, retries = 0) 
           finish_reason: 'stop'
         }],
         usage: {
-          prompt_tokens: 0, // Gemini nie zwraca szczegółowych informacji o tokenach w darmowej wersji
-          completion_tokens: 0,
-          total_tokens: 0
+          prompt_tokens: usage.promptTokenCount || 0,
+          completion_tokens: usage.candidatesTokenCount || 0,
+          total_tokens: usage.totalTokenCount || 0
         }
       };
     } else {
@@ -234,6 +235,7 @@ async function fetchGeminiWithRetry(model, messages, options = {}, retries = 0) 
       });
       
       const response = result.response;
+      const usage = response.usageMetadata || {};
       
       return {
         id: `gemini-${Date.now()}`,
@@ -246,9 +248,9 @@ async function fetchGeminiWithRetry(model, messages, options = {}, retries = 0) 
           finish_reason: 'stop'
         }],
         usage: {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0
+          prompt_tokens: usage.promptTokenCount || 0,
+          completion_tokens: usage.candidatesTokenCount || 0,
+          total_tokens: usage.totalTokenCount || 0
         }
       };
     }
