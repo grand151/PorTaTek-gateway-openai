@@ -2824,6 +2824,47 @@ print(response.choices[0].message.content)</div>
     </div>
     
     <script>
+        // Storage safety shim - handles cases where localStorage/sessionStorage are blocked
+        // (sandboxed iframes, private mode, CSP restrictions)
+        if (typeof window !== 'undefined') {
+            const storageProxy = {
+                getItem: (key) => { try { return localStorage.getItem(key); } catch (e) { return null; } },
+                setItem: (key, value) => { try { localStorage.setItem(key, value); } catch (e) {} },
+                removeItem: (key) => { try { localStorage.removeItem(key); } catch (e) {} },
+                clear: () => { try { localStorage.clear(); } catch (e) {} },
+                key: (index) => { try { return localStorage.key(index); } catch (e) { return null; } }
+            };
+            
+            const sessionStorageProxy = {
+                getItem: (key) => { try { return sessionStorage.getItem(key); } catch (e) { return null; } },
+                setItem: (key, value) => { try { sessionStorage.setItem(key, value); } catch (e) {} },
+                removeItem: (key) => { try { sessionStorage.removeItem(key); } catch (e) {} },
+                clear: () => { try { sessionStorage.clear(); } catch (e) {} },
+                key: (index) => { try { return sessionStorage.key(index); } catch (e) { return null; } }
+            };
+            
+            try {
+                window.localStorage = storageProxy;
+                window.sessionStorage = sessionStorageProxy;
+            } catch (e) {
+                // Fallback: just define them if we can't override
+                window.localStorage = window.localStorage || storageProxy;
+                window.sessionStorage = window.sessionStorage || sessionStorageProxy;
+            }
+        }
+        
+        // Suppress storage-related errors from debug and other libraries
+        window.addEventListener('error', (event) => {
+            if (event.message && (
+                event.message.includes('storage') || 
+                event.message.includes('localStorage') || 
+                event.message.includes('sessionStorage')
+            )) {
+                event.preventDefault();
+                return false;
+            }
+        }, true);
+        
         let configData = null;
         
         function switchTab(tabName) {
