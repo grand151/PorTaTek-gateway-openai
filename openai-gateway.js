@@ -11,8 +11,10 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // OAuth & Authentication
 const GitHubAuthManager = require('./auth.js');
+const GitHubDeviceAuthManager = require('./device-auth.js');
 const UserManager = require('./users.js');
 const { createAuthMiddleware, optionalAuthMiddleware } = require('./middleware.js');
+const registerDeviceFlowRoutes = require('./device-flow-routes.js');
 
 // Dynamic import for ES module
 let createOpencodeClient;
@@ -64,7 +66,12 @@ const githubAuth = new GitHubAuthManager({
   jwtSecret: process.env.JWT_SECRET || 'default-secret-key'
 });
 const userManager = new UserManager('./users-db.json');
+const deviceAuth = new GitHubDeviceAuthManager(
+  process.env.GITHUB_CLIENT_ID,
+  process.env.GITHUB_CLIENT_SECRET
+);
 logger.info('AUTH', 'GitHub OAuth and User Manager initialized');
+logger.info('AUTH', 'GitHub Device Flow initialized');
 
 // Rate Limiting System (Token Bucket Algorithm)
 const RATE_LIMIT_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW || '60000', 10); // 1 minute
@@ -1677,6 +1684,14 @@ app.post('/auth/logout', (req, res) => {
   res.clearCookie('auth_token');
   res.json({ message: 'Logged out successfully' });
 });
+
+// Register Device Flow routes
+registerDeviceFlowRoutes(app, deviceAuth, userManager, createAuthMiddleware(githubAuth, userManager), process.env.JWT_SECRET || 'default-secret-key');
+
+// Periodic cleanup of expired device codes (every 10 minutes)
+setInterval(() => {
+  deviceAuth.cleanupExpiredCodes();
+}, 10 * 60 * 1000);
 
 // Endpointy testowe (health check)
 app.get('/health', async (req, res) => {
