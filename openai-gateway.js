@@ -7,6 +7,7 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const dotenv = require('dotenv');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { createOpencodeClient } = require('@opencode-ai/sdk');
 
 // Załadowanie zmiennych środowiskowych
 dotenv.config();
@@ -30,6 +31,21 @@ if (GEMINI_API_KEY) {
 if (OPENROUTER_API_KEY) {
   console.log('OpenRouter API client initialized');
 }
+
+let opencodeClient = null;
+const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL || 'http://localhost:4096';
+const initializeOpencodeClient = async () => {
+  try {
+    opencodeClient = createOpencodeClient({ baseUrl: OPENCODE_BASE_URL });
+    console.log(`OpenCode client initialized (baseUrl: ${OPENCODE_BASE_URL})`);
+  } catch (error) {
+    console.warn('OpenCode client initialization failed:', error.message);
+  }
+};
+
+initializeOpencodeClient().catch(error => {
+  console.warn('Failed to initialize OpenCode client on startup:', error.message);
+});
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -109,7 +125,11 @@ const MODEL_PROVIDER = {
   'gemini-2.0-flash-exp': 'gemini',
   'gemini-1.5-flash': 'gemini',
   'gemini-1.5-pro': 'gemini',
-  // Wszystkie inne modele używają OpenRouter jako domyślnego providera
+  'opencode/big-pickle:free': 'opencode',
+  'opencode/glm-5-free:free': 'opencode',
+  'opencode/gpt-5-nano:free': 'opencode',
+  'opencode/kimi-k2.5-free:free': 'opencode',
+  'opencode/minimax-m2.5-free:free': 'opencode',
 };
 
 // Mapowanie fallbacków dla modeli (gdy główny model jest niedostępny)
@@ -331,6 +351,74 @@ async function fetchGeminiWithRetry(model, messages, options = {}, retries = 0) 
   }
 }
 
+async function fetchOpencodeWithRetry(model, messages, options = {}, retries = 0) {
+  if (!opencodeClient) {
+    throw new Error('OpenCode client not initialized. Ensure OPENCODE_BASE_URL is configured.');
+  }
+
+  try {
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+    if (!lastUserMessage) {
+      throw new Error('No user message found');
+    }
+
+    const requestBody = {
+      model: {
+        providerID: model.split('/')[0] || 'opencode',
+        modelID: model
+      },
+      parts: [
+        {
+          type: 'text',
+          text: lastUserMessage.content
+        }
+      ]
+    };
+
+    const response = await opencodeClient.session.prompt({
+      path: { id: 'default-session' },
+      body: requestBody
+    });
+
+    const usage = {
+      prompt_tokens: messages.reduce((sum, m) => sum + (m.content?.length || 0) / 4, 0),
+      completion_tokens: (response.content?.text?.length || 0) / 4,
+      total_tokens: 0
+    };
+
+    return {
+      id: `opencode-${Date.now()}`,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: response.content?.text || ''
+          },
+          finish_reason: 'stop'
+        }
+      ],
+      usage: {
+        prompt_tokens: Math.ceil(usage.prompt_tokens),
+        completion_tokens: Math.ceil(usage.completion_tokens),
+        total_tokens: Math.ceil(usage.prompt_tokens + usage.completion_tokens)
+      }
+    };
+  } catch (error) {
+    console.error(`Error with OpenCode model ${model}, attempt ${retries + 1}/${MAX_RETRIES}:`, error.message);
+
+    if (retries >= MAX_RETRIES - 1) {
+      throw error;
+    }
+
+    const waitTime = RETRY_DELAY * Math.pow(2, retries);
+    console.log(`Retrying in ${waitTime}ms...`);
+    await delay(waitTime);
+
+    return fetchOpencodeWithRetry(model, messages, options, retries + 1);
+  }
+}
+
 // Funkcja do wykonania zapytania do OpenRouter z mechanizmem retry i fallback
 async function fetchOpenRouterWithRetry(url, data, headers, retries = 0, modelFallbacks = []) {
   const currentModel = data.model;
@@ -443,6 +531,46 @@ app.post('/v1/chat/completions', async (req, res) => {
         responseCache.set(cacheKey, openAIResponse);
         setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
         
+        res.json(openAIResponse);
+      } catch (error) {
+        handleError(error, res);
+      }
+    } else if (provider === 'opencode') {
+      if (!opencodeClient) {
+        return res.status(503).json({
+          error: {
+            message: 'OpenCode API is not configured. Please set OPENCODE_BASE_URL.',
+            type: 'configuration_error',
+            code: 'opencode_not_configured'
+          }
+        });
+      }
+
+      if (stream) {
+        return res.status(501).json({
+          error: {
+            message: 'Streaming is not yet supported for OpenCode models',
+            type: 'not_implemented',
+            code: 'streaming_not_supported'
+          }
+        });
+      }
+
+      try {
+        const opencodeData = await fetchOpencodeWithRetry(model, messages, otherOptions);
+
+        const openAIResponse = {
+          id: opencodeData.id,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: requestedModel,
+          choices: opencodeData.choices,
+          usage: opencodeData.usage
+        };
+
+        responseCache.set(cacheKey, openAIResponse);
+        setTimeout(() => responseCache.delete(cacheKey), CACHE_TTL);
+
         res.json(openAIResponse);
       } catch (error) {
         handleError(error, res);
@@ -681,6 +809,16 @@ app.get('/v1/models-by-provider', (req, res) => {
         { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash', priority: 'high' },
         { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', priority: 'high' },
         { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', priority: 'medium' }
+      ]
+    },
+    opencode: {
+      name: 'OpenCode',
+      models: [
+        { id: 'opencode/big-pickle:free', name: 'Big Pickle', priority: 'high' },
+        { id: 'opencode/glm-5-free:free', name: 'GLM-5 Free', priority: 'high' },
+        { id: 'opencode/gpt-5-nano:free', name: 'GPT-5 Nano', priority: 'medium' },
+        { id: 'opencode/kimi-k2.5-free:free', name: 'Kimi K2.5 Free', priority: 'medium' },
+        { id: 'opencode/minimax-m2.5-free:free', name: 'MiniMax M2.5 Free', priority: 'low' }
       ]
     },
     custom: {
@@ -1439,13 +1577,14 @@ function getConfigPanelHTML() {
                     <h3>➕ Dodaj klucz API do providera</h3>
                     <div id="add-key-result"></div>
                     <form onsubmit="addProviderKey(event)">
-                        <div class="form-group">
-                            <label>Provider:</label>
-                            <select id="key-provider" required>
-                                <option value="openrouter">OpenRouter</option>
-                                <option value="gemini">Google Gemini</option>
-                            </select>
-                        </div>
+                         <div class="form-group">
+                             <label>Provider:</label>
+                             <select id="key-provider" required>
+                                 <option value="openrouter">OpenRouter</option>
+                                 <option value="gemini">Google Gemini</option>
+                                 <option value="opencode">OpenCode</option>
+                             </select>
+                         </div>
                         <div class="form-group">
                             <label>Klucz API:</label>
                             <input type="password" id="new-api-key" placeholder="Wklej swój klucz API" required>
@@ -1504,13 +1643,14 @@ function getConfigPanelHTML() {
                             <label>Model docelowy:</label>
                             <input type="text" id="new-target-model" placeholder="np. qwen/qwen3-235b-a22b:free" required>
                         </div>
-                        <div class="form-group">
-                            <label>Provider:</label>
-                            <select id="new-provider" onchange="onProviderChange()">
-                                <option value="openrouter">OpenRouter</option>
-                                <option value="gemini">Google Gemini</option>
-                            </select>
-                        </div>
+                         <div class="form-group">
+                             <label>Provider:</label>
+                             <select id="new-provider" onchange="onProviderChange()">
+                                 <option value="openrouter">OpenRouter</option>
+                                 <option value="gemini">Google Gemini</option>
+                                 <option value="opencode">OpenCode</option>
+                             </select>
+                         </div>
                         <button type="submit">💾 Dodaj mapowanie</button>
                     </form>
                 </div>
